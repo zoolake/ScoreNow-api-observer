@@ -5,6 +5,7 @@ import typer
 
 from scorenow_api_observer.bets_api_client import get_event_view
 from scorenow_api_observer.settings import Settings
+from scorenow_api_observer.storage import save_raw_response
 
 app = typer.Typer(
     name="observer",
@@ -27,7 +28,7 @@ def collect(
         help="수집할 외부 API 경기 ID",
     ),
 ) -> None:
-    """BETS View API 를 호출하고 응답을 확인합니다."""
+    """BETS View API를 호출하고 원문 응답을 저장합니다."""
 
     # BaseSettings가 실행 시 .env 에서 필수 값을 읽어온다.
     settings = Settings()  # pyright: ignore[reportCallIssue]
@@ -48,7 +49,13 @@ def collect(
         )
         raise typer.Exit(code=1) from None
 
+    output_path = save_raw_response(
+        event_id=event_id,
+        response_body=response.content,
+    )
+    
     typer.echo(f"HTTP 상태 코드: {response.status_code}")
+    typer.echo(f"원문 저장 위치: {output_path}")
 
     # HTTP status code : 4xx, 5xx
     if response.is_error:
