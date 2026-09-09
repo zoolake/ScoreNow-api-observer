@@ -19,4 +19,7 @@ reports/*
 data/metadata/*
 !data/metadata/.gitkeep
 
+data/raw/*
+!data/raw/.gitkeep
+
 .DS_Store
