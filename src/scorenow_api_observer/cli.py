@@ -1,11 +1,13 @@
 import json
+from datetime import UTC, datetime
 
 import httpx
 import typer
 
 from scorenow_api_observer.bets_api_client import get_event_view
+from scorenow_api_observer.models import CaptureMetadata
 from scorenow_api_observer.settings import Settings
-from scorenow_api_observer.storage import save_raw_response
+from scorenow_api_observer.storage import save_capture_metadata, save_raw_response
 
 app = typer.Typer(
     name="observer",
@@ -28,7 +30,7 @@ def collect(
         help="수집할 외부 API 경기 ID",
     ),
 ) -> None:
-    """BETS View API를 호출하고 원문 응답을 저장합니다."""
+    """BETS View API를 호출하고 응답을 저장합니다."""
 
     # BaseSettings가 실행 시 .env 에서 필수 값을 읽어온다.
     settings = Settings()  # pyright: ignore[reportCallIssue]
@@ -49,13 +51,32 @@ def collect(
         )
         raise typer.Exit(code=1) from None
 
-    output_path = save_raw_response(
+    captured_at = datetime.now(UTC)
+
+    raw_output_path = save_raw_response(
         event_id=event_id,
         response_body=response.content,
+        captured_at=captured_at,
+    )
+
+    metadata = CaptureMetadata(
+        captured_at=captured_at,
+        provider="BETS API",
+        endpoint="/v1/event/view",
+        http_method="GET",
+        event_ids=[event_id],
+        http_status_code=response.status_code,
+        elapsed_ms=round(response.elapsed.total_seconds() * 1000, 2),
+        response_size_bytes=len(response.content),
+        content_type=response.headers.get("content-type"),
+        raw_file_path=str(raw_output_path),
     )
     
+    metadata_output_path = save_capture_metadata(metadata)
+
     typer.echo(f"HTTP 상태 코드: {response.status_code}")
-    typer.echo(f"원문 저장 위치: {output_path}")
+    typer.echo(f"원문 저장 위치: {raw_output_path}")
+    typer.echo(f"메타데이터 저장 위치: {metadata_output_path}")
 
     # HTTP status code : 4xx, 5xx
     if response.is_error:
