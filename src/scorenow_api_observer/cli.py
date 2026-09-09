@@ -61,7 +61,7 @@ def collect(
 
     metadata = CaptureMetadata(
         captured_at=captured_at,
-        provider="BETS API",
+        provider="betsapi",
         endpoint="/v1/event/view",
         http_method="GET",
         event_ids=[event_id],

@@ -12,6 +12,7 @@ def save_raw_response(
     event_id: str,
     response_body: bytes,
     captured_at: datetime,
+    base_directory: Path = RAW_DATA_DIRECTORY,
 ) -> Path:
     """API 응답 원문을 호출 날짜별 디렉터리에 저장합니다."""
 
@@ -19,7 +20,7 @@ def save_raw_response(
     timestamp = captured_at.strftime("%Y%m%dT%H%M%S%fZ")
     safe_event_id = _to_safe_file_name(event_id)
 
-    output_directory = RAW_DATA_DIRECTORY / date_directory
+    output_directory = base_directory / date_directory
     output_directory.mkdir(
         parents=True,  # 상위폴더가 없으면 같이 생성
         exist_ok=True,  # 이미 존재해도 오류 발생 X
@@ -31,12 +32,14 @@ def save_raw_response(
     return output_path
 
 
-def save_capture_metadata(metadata: CaptureMetadata) -> Path:
+def save_capture_metadata(
+    metadata: CaptureMetadata, base_directory: Path = METADATA_DIRECTORY
+) -> Path:
     """API 호출 기록을 원문과 동일한 파일명으로 저장합니다."""
 
     date_directory = metadata.captured_at.strftime("%Y-%m-%d")
 
-    output_directory = METADATA_DIRECTORY / date_directory
+    output_directory = base_directory / date_directory
     output_directory.mkdir(parents=True, exist_ok=True)
 
     raw_file_name = Path(metadata.raw_file_path).name
