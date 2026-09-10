@@ -209,14 +209,14 @@ def _print_added_paths(added_paths: list) -> None:
     typer.echo("")
     typer.echo(f"이번 응답에서 새로 보이는 경로: {len(added_paths)}개")
     for added_path in added_paths:
-        typer.echo(f" ➕ {added_path}")
+        typer.echo(f" + {added_path}")
 
 
 def _print_removed_paths(removed_paths: list) -> None:
     typer.echo("")
     typer.echo(f"이번 응답에서 보이지 않는 경로: {len(removed_paths)}개")
     for removed_path in removed_paths:
-        typer.echo(f" ➖ {removed_path}")
+        typer.echo(f" - {removed_path}")
 
 
 def _print_type_changes(type_changes: list) -> None:
@@ -226,4 +226,4 @@ def _print_type_changes(type_changes: list) -> None:
         previous_types = ", ".join(sorted(type_change.previous_types))
         current_types = ", ".join(sorted(type_change.current_types))
 
-        typer.echo(f" ⚠️ {type_change.path}: {previous_types} → {current_types}")
+        typer.echo(f" ~ {type_change.path}: {previous_types} → {current_types}")
