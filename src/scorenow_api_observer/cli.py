@@ -90,7 +90,7 @@ def watch(
         help="수집할 외부 API 경기 ID",
     ),
     interval_seconds: int = typer.Option(
-        30, "--interval", "-i", min=1, help="호출 간격 (초))"
+        30, "--interval", "-i", min=1, help="호출 간격(초))"
     ),
     count: int | None = typer.Option(
         None, "--count", "-c", min=1, help="호출할 횟수. 생략하면 계속 수집"
@@ -140,7 +140,7 @@ def watch(
         typer.echo("❌ 반복 수집을 중단했습니다.")
 
     typer.echo("")
-    typer.echo(f"{count} 회 수집 완료했습니다.")
+    typer.echo(f"{attempt_count} 회 수집 완료했습니다.")
 
 
 if __name__ == "__main__":
