@@ -1,8 +1,8 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from pydantic.dataclasses import dataclass
 
 from scorenow_api_observer.bets_api_client import EVENT_VIEW_ENDPOINT, get_event_view
 from scorenow_api_observer.models import CaptureMetadata
@@ -24,7 +24,7 @@ def capture_event_view(
     token: str,
     event_id: str,
 ) -> CaptureResult:
-    """Event View API 를 한 번 호출하고 결과를 저장합니다."""
+    """Event View API 를 한 번 호출하고 응답과 메타데이터를 저장합니다."""
 
     response = get_event_view(
         base_url=base_url,

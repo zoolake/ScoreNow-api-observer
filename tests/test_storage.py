@@ -45,7 +45,9 @@ def test_save_raw_response_and_metadata(
 
     assert raw_path == (tmp_path / "raw" / "2026-09-09" / expected_file_name)
     assert metadata_path == (tmp_path / "metadata" / "2026-09-09" / expected_file_name)
-
+    
+    assert raw_path.read_bytes() == response_body
+    
     saved_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
     assert saved_metadata["provider"] == "betsapi"
