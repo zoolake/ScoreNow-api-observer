@@ -90,6 +90,26 @@ def compare_json_structures(
     )
 
 
+def compare_with_previous_capture(
+    event_id: str,
+    current_file_path: Path,
+) -> StructureComparison | None:
+    """현재 응답과 동일 경기의 직전 응답을 비교합니다."""
+
+    captures = find_latest_captures(event_id, 2)
+
+    if len(captures) < 2:
+        return None
+
+    previous_capture = captures[-2]
+    previous_file_path = Path(previous_capture.raw_file_path)
+
+    previous_data = load_json_file(previous_file_path)
+    current_data = load_json_file(current_file_path)
+
+    return compare_json_structures(previous_data, current_data)
+
+
 def _extract_structure(data: Any) -> dict[str, set[str]]:
     """JSON 전체에서 경로별 자료형을 수집합니다."""
 

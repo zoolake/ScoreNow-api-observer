@@ -7,7 +7,9 @@ import typer
 
 from scorenow_api_observer.collector import CaptureResult, capture_event_view
 from scorenow_api_observer.comparison import (
+    StructureComparison,
     compare_json_structures,
+    compare_with_previous_capture,
     find_latest_captures,
     load_json_file,
 )
@@ -114,6 +116,7 @@ def watch(
     typer.echo("중단하려면 Ctrl+C를 누르세요.")
 
     attempt_count = 0
+    saved_count = 0
 
     try:
         while count is None or attempt_count < count:
@@ -131,10 +134,26 @@ def watch(
             except httpx.RequestError:
                 typer.echo("API 서버에 연결하지 못했습니다.", err=True)
             else:
+                saved_count += 1
+
                 _print_capture_summary(result)
 
                 if result.response.is_error:
                     typer.echo("API가 오류 응답을 반환했습니다.", err=True)
+                else:
+                    try:
+                        comparison = compare_with_previous_capture(
+                            event_id, result.raw_file_path
+                        )
+                    except OSError, json.JSONDecodeError:
+                        typer.echo(
+                            "저장된 응답을 읽거나, 비교하지 못했습니다.", err=True
+                        )
+                    else:
+                        if comparison is None:
+                            typer.echo("직전 응답이 없어 구조 비교를 생략합니다.")
+                        else:
+                            _print_structure_comparison(comparison)
 
             if count is not None and attempt_count >= count:
                 break
@@ -143,10 +162,15 @@ def watch(
 
     except KeyboardInterrupt:
         typer.echo("")
-        typer.echo("❌ 반복 수집을 중단했습니다.")
+        typer.echo(
+            f"❌ 반복 수집을 중단했습니다. 호출: {attempt_count}회 / 저장: {saved_count}개"
+        )
+        return
 
     typer.echo("")
-    typer.echo(f"{attempt_count} 회 수집 완료했습니다.")
+    typer.echo(
+        f"✅ {attempt_count} 회 수집 완료했습니다. 호출: {attempt_count}회 / 저장: {saved_count}개"
+    )
 
 
 @app.command()
@@ -187,6 +211,12 @@ def compare(
     typer.echo(f"직전 응답: {previous_capture.captured_at.isoformat()}")
     typer.echo(f"최신 응답: {current_capture.captured_at.isoformat()}")
 
+    typer.echo("")
+    _print_structure_comparison(result)
+
+
+def _print_structure_comparison(result: StructureComparison) -> None:
+
     has_changes = bool(
         result.added_paths or result.removed_paths or result.type_changes
     )
@@ -201,18 +231,14 @@ def compare(
     _print_type_changes(result.type_changes)
 
 
-if __name__ == "__main__":
-    app()
-
-
-def _print_added_paths(added_paths: list) -> None:
+def _print_added_paths(added_paths: list[str]) -> None:
     typer.echo("")
     typer.echo(f"이번 응답에서 새로 보이는 경로: {len(added_paths)}개")
     for added_path in added_paths:
         typer.echo(f" + {added_path}")
 
 
-def _print_removed_paths(removed_paths: list) -> None:
+def _print_removed_paths(removed_paths: list[str]) -> None:
     typer.echo("")
     typer.echo(f"이번 응답에서 보이지 않는 경로: {len(removed_paths)}개")
     for removed_path in removed_paths:
@@ -227,3 +253,7 @@ def _print_type_changes(type_changes: list) -> None:
         current_types = ", ".join(sorted(type_change.current_types))
 
         typer.echo(f" ~ {type_change.path}: {previous_types} → {current_types}")
+
+
+if __name__ == "__main__":
+    app()
