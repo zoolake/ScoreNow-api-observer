@@ -1,10 +1,16 @@
 import json
 import time
+from pathlib import Path
 
 import httpx
 import typer
 
 from scorenow_api_observer.collector import CaptureResult, capture_event_view
+from scorenow_api_observer.comparison import (
+    compare_json_structures,
+    find_latest_captures,
+    load_json_file,
+)
 from scorenow_api_observer.settings import Settings
 
 app = typer.Typer(
@@ -143,5 +149,81 @@ def watch(
     typer.echo(f"{attempt_count} 회 수집 완료했습니다.")
 
 
+@app.command()
+def compare(
+    event_id: str = typer.Option(
+        ...,
+        "--event-id",
+        "-e",
+        help="비교할 외부 API 경기 ID",
+    ),
+) -> None:
+    """동일 경기의 직전 응답과 최신 응답 구조를 비교합니다."""
+
+    captures = find_latest_captures(event_id)
+
+    if len(captures) < 2:
+        typer.echo("비교하려면 동일 경기의 응답이 최소 2개 필요합니다.", err=True)
+        raise typer.Exit(code=1)
+
+    previous_capture = captures[0]
+    current_capture = captures[1]
+
+    previous_path = Path(previous_capture.raw_file_path)
+    current_path = Path(current_capture.raw_file_path)
+
+    try:
+        previous_data = load_json_file(previous_path)
+        current_data = load_json_file(current_path)
+    except OSError, json.JSONDecodeError:
+        typer.echo(
+            "저장된 원문 파일을 읽거나 JSON 으로 변환하는데 실패했습니다.", err=True
+        )
+        raise typer.Exit(code=1) from None
+
+    result = compare_json_structures(previous_data, current_data)
+
+    typer.echo(f"경기 ID: {event_id}")
+    typer.echo(f"직전 응답: {previous_capture.captured_at.isoformat()}")
+    typer.echo(f"최신 응답: {current_capture.captured_at.isoformat()}")
+
+    has_changes = bool(
+        result.added_paths or result.removed_paths or result.type_changes
+    )
+
+    if not has_changes:
+        typer.echo("")
+        typer.echo("JSON 구조 변화가 없습니다.")
+        return
+
+    _print_added_paths(result.added_paths)
+    _print_removed_paths(result.removed_paths)
+    _print_type_changes(result.type_changes)
+
+
 if __name__ == "__main__":
     app()
+
+
+def _print_added_paths(added_paths: list) -> None:
+    typer.echo("")
+    typer.echo(f"이번 응답에서 새로 보이는 경로: {len(added_paths)}개")
+    for added_path in added_paths:
+        typer.echo(f" ➕ {added_path}")
+
+
+def _print_removed_paths(removed_paths: list) -> None:
+    typer.echo("")
+    typer.echo(f"이번 응답에서 보이지 않는 경로: {len(removed_paths)}개")
+    for removed_path in removed_paths:
+        typer.echo(f" ➖ {removed_path}")
+
+
+def _print_type_changes(type_changes: list) -> None:
+    typer.echo("")
+    typer.echo(f"자료형이 달라진 경로: {len(type_changes)}개")
+    for type_change in type_changes:
+        previous_types = ", ".join(sorted(type_change.previous_types))
+        current_types = ", ".join(sorted(type_change.current_types))
+
+        typer.echo(f" ⚠️ {type_change.path}: {previous_types} → {current_types}")
