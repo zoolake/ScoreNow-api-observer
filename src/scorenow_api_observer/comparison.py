@@ -35,9 +35,7 @@ def find_latest_captures(
     captures: list[CaptureMetadata] = []
 
     for metadata_path in base_directory.rglob("*.json"):
-        metadata_text = metadata_path.read_text(
-            encoding="utf-8"
-        )  # read_text vs read_content
+        metadata_text = metadata_path.read_text(encoding="utf-8")
         metadata = CaptureMetadata.model_validate_json(metadata_text)
 
         if event_id in metadata.event_ids:
@@ -52,7 +50,7 @@ def load_json_file(file_path: Path) -> Any:
     """저장된 원문 JSON 파일을 읽습니다."""
 
     file_text = file_path.read_text(encoding="utf-8")
-    return json.loads(file_text)  # json.load() vs json.loads()
+    return json.loads(file_text)
 
 
 def compare_json_structures(
@@ -72,16 +70,16 @@ def compare_json_structures(
 
     common_paths = previous_paths & current_paths
     type_changes = []
-    for path in sorted(
-        common_paths
-    ):  # sorted 가 뭐고 common_paths 가 아닌 sorted(common_paths)를 쓰는 이유
+    for path in sorted(common_paths):
         previous_types = previous_structure[path]
         current_types = current_structure[path]
 
         if previous_types != current_types:
             type_changes.append(
                 TypeChange(
-                    path=path, previous_types=previous_types, current_types=current_types
+                    path=path,
+                    previous_types=previous_types,
+                    current_types=current_types,
                 )
             )
 
