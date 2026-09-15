@@ -19,6 +19,9 @@ reports/*
 data/metadata/*
 !data/metadata/.gitkeep
 
+data/changes/*
+!data/changes/.gitkeep
+
 data/raw/*
 !data/raw/.gitkeep
 

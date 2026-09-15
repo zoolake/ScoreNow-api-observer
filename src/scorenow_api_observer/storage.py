@@ -2,10 +2,11 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from scorenow_api_observer.models import CaptureMetadata
+from scorenow_api_observer.models import CaptureMetadata, StructureChangeRecord
 
 RAW_DATA_DIRECTORY = Path("data/raw/event-view")
 METADATA_DIRECTORY = Path("data/metadata/event-view")
+STRUCTURE_CHANGE_DIRECTORY = Path("data/changes/event-view")
 
 
 def save_raw_response(
@@ -47,6 +48,31 @@ def save_capture_metadata(
 
     metadata_json = metadata.model_dump_json(indent=2)
     output_path.write_text(metadata_json + "\n", encoding="utf-8")
+
+    return output_path
+
+
+def save_structure_change_record(
+    record: StructureChangeRecord,
+    base_directory: Path = STRUCTURE_CHANGE_DIRECTORY,
+) -> Path:
+    """응답 구조 변경 정보를 저장합니다."""
+
+    date_directory = record.current_captured_at.strftime("%Y-%m-%d")
+
+    output_directory = base_directory / date_directory
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    raw_file_name = Path(record.current_raw_file_path).name
+    output_path = output_directory / raw_file_name
+
+    record_json = record.model_dump_json(indent=2)
+
+    try:
+        with output_path.open("x", encoding="utf-8") as f:
+            f.write(record_json + "\n")
+    except FileExistsError:
+        pass
 
     return output_path
 

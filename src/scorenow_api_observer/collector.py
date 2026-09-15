@@ -16,6 +16,7 @@ class CaptureResult:
     response: httpx.Response
     raw_file_path: Path
     metadata_file_path: Path
+    metadata: CaptureMetadata
 
 
 def capture_event_view(
@@ -59,4 +60,5 @@ def capture_event_view(
         response=response,
         raw_file_path=raw_file_path,
         metadata_file_path=metadata_file_path,
+        metadata=metadata,
     )

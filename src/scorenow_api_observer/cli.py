@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -10,10 +11,13 @@ from scorenow_api_observer.comparison import (
     StructureComparison,
     compare_json_structures,
     compare_with_previous_capture,
+    convert_to_structure_change_record,
     find_latest_captures,
     load_json_file,
 )
+from scorenow_api_observer.models import CaptureMetadata
 from scorenow_api_observer.settings import Settings
+from scorenow_api_observer.storage import save_structure_change_record
 
 app = typer.Typer(
     name="observer",
@@ -104,7 +108,7 @@ def watch(
         None, "--count", "-c", min=1, help="호출할 횟수. 생략하면 계속 수집"
     ),
 ) -> None:
-    """Event View API 를 일정한 간격으로 반복 호출합니다."""
+    """Event View API를 반복 수집하고 응답 구조 변화를 비교·기록합니다."""
 
     settings = Settings()  # pyright: ignore[reportCallIssue]
 
@@ -141,19 +145,9 @@ def watch(
                 if result.response.is_error:
                     typer.echo("API가 오류 응답을 반환했습니다.", err=True)
                 else:
-                    try:
-                        comparison = compare_with_previous_capture(
-                            event_id, result.raw_file_path
-                        )
-                    except OSError, json.JSONDecodeError:
-                        typer.echo(
-                            "저장된 응답을 읽거나, 비교하지 못했습니다.", err=True
-                        )
-                    else:
-                        if comparison is None:
-                            typer.echo("직전 응답이 없어 구조 비교를 생략합니다.")
-                        else:
-                            _print_structure_comparison(comparison)
+                    _compare_and_save_structure_change(
+                        event_id=event_id, current_capture=result.metadata
+                    )
 
             if count is not None and attempt_count >= count:
                 break
@@ -182,7 +176,7 @@ def compare(
         help="비교할 외부 API 경기 ID",
     ),
 ) -> None:
-    """동일 경기의 직전 응답과 최신 응답 구조를 비교합니다."""
+    """저장된 동일 경기의 최근 응답 두 개를 비교하여 구조 변화를 출력합니다."""
 
     captures = find_latest_captures(event_id)
 
@@ -217,11 +211,7 @@ def compare(
 
 def _print_structure_comparison(result: StructureComparison) -> None:
 
-    has_changes = bool(
-        result.added_paths or result.removed_paths or result.type_changes
-    )
-
-    if not has_changes:
+    if not result.has_changes:
         typer.echo("")
         typer.echo("JSON 구조 변화가 없습니다.")
         return
@@ -229,6 +219,40 @@ def _print_structure_comparison(result: StructureComparison) -> None:
     _print_added_paths(result.added_paths)
     _print_removed_paths(result.removed_paths)
     _print_type_changes(result.type_changes)
+
+
+def _compare_and_save_structure_change(
+    event_id: str, current_capture: CaptureMetadata
+) -> None:
+    """현재 수집과 직전 수집을 비교하고 구조 변화가 있으면 저장합니다."""
+
+    try:
+        comparison = compare_with_previous_capture(event_id, current_capture)
+    except OSError, json.JSONDecodeError:
+        typer.echo("저장된 응답을 읽거나, 비교하지 못했습니다.", err=True)
+        return
+
+    if comparison is None:
+        typer.echo("직전 응답이 없어 구조 비교를 생략합니다.")
+        return
+
+    record = convert_to_structure_change_record(comparison, datetime.now(UTC))
+
+    _print_structure_comparison(comparison.structure_comparison)
+
+    if record is None:
+        return
+
+    try:
+        saved_path = save_structure_change_record(record)
+    except OSError:
+        typer.echo(
+            "🔴 응답 구조 변화 저장에 실패하였습니다.",
+            err=True,
+        )
+        return
+
+    typer.echo(f"🟢 응답 구조 변화 기록 위치: {saved_path}")
 
 
 def _print_added_paths(added_paths: list[str]) -> None:

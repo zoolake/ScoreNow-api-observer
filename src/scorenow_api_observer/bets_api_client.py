@@ -2,6 +2,7 @@ import httpx
 
 EVENT_VIEW_ENDPOINT = "/v1/event/view"
 
+
 def get_event_view(
     base_url: str,
     token: str,
