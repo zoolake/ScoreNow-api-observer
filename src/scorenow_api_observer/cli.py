@@ -102,7 +102,7 @@ def watch(
         help="수집할 외부 API 경기 ID",
     ),
     interval_seconds: int = typer.Option(
-        30, "--interval", "-i", min=1, help="호출 간격(초))"
+        30, "--interval", "-i", min=1, help="호출 간격(초)"
     ),
     count: int | None = typer.Option(
         None, "--count", "-c", min=1, help="호출할 횟수. 생략하면 계속 수집"

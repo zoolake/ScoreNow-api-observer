@@ -9,11 +9,9 @@ __pycache__/
 .coverage
 htmlcov/
 
-data/raw/*
 data/*.duckdb
-reports/*
 
-!data/raw/.gitkeep
+reports/*
 !reports/.gitkeep
 
 data/metadata/*
