@@ -3,12 +3,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from scorenow_api_observer.event_view_response import EventViewResponseIssue
 from scorenow_api_observer.models import (
     CaptureMetadata,
     StructureChangeRecord,
     TypeChangeRecord,
 )
-from scorenow_api_observer.storage import METADATA_DIRECTORY, load_json_file
+from scorenow_api_observer.storage import (
+    METADATA_DIRECTORY,
+    load_capture_metadata,
+    load_json_file,
+)
 
 
 @dataclass(frozen=True)
@@ -53,10 +58,9 @@ def find_latest_captures(
     captures: list[CaptureMetadata] = []
 
     for metadata_path in base_directory.rglob("*.json"):
-        metadata_text = metadata_path.read_text(encoding="utf-8")
-        metadata = CaptureMetadata.model_validate_json(metadata_text)
+        metadata = load_capture_metadata(metadata_path)
 
-        if event_id in metadata.event_ids:
+        if _contains_observable_event(metadata, event_id):
             captures.append(metadata)
 
     captures.sort(key=lambda capture: capture.captured_at)
@@ -74,11 +78,10 @@ def find_previous_capture(
     candidates: list[CaptureMetadata] = []
 
     for metadata_path in base_directory.rglob("*.json"):
-        metadata_text = metadata_path.read_text(encoding="utf-8")
-        metadata = CaptureMetadata.model_validate_json(metadata_text)
+        metadata = load_capture_metadata(metadata_path)
 
         if (
-            event_id in metadata.event_ids
+            _contains_observable_event(metadata, event_id)
             and metadata.captured_at < current_capture.captured_at
         ):
             candidates.append(metadata)
@@ -245,3 +248,21 @@ def _get_type_name(value: Any) -> str:
         return "number"
 
     return type(value).__name__
+
+
+def _contains_observable_event(metadata: CaptureMetadata, event_id: str) -> bool:
+    """Capture 응답에서 이벤트를 하나의 결과로 식별할 수 있는지 확인합니다."""
+
+    returned_event_ids: list[str] = metadata.returned_event_ids
+    issues: list[EventViewResponseIssue] = metadata.response_issues
+
+    # View API 에 의해 반환된 이벤트 ID 에 포함되지 않는 경우
+    if event_id not in returned_event_ids:
+        return False
+
+    # 이벤트 ID 가 중복으로 반환된 경우
+    for issue in issues:
+        if event_id == issue.event_id and issue.code == "duplicate_event_id":
+            return False
+
+    return True

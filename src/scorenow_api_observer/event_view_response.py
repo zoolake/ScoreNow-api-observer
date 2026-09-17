@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class InvalidEventViewResponseShapeError(ValueError):
+    """Event View 응답이 분석 가능한 JSON 구조가 아닐 때 발생합니다."""
+
+
 @dataclass(frozen=True)
 class EventViewResponseIssue:
     """Event View 응답을 요청 내용과 대조하며 발견한 이상 현상입니다.
@@ -49,9 +53,17 @@ def analyze_event_view_response(
 
     result_indices_by_event_id: dict[str, list[int]] = {}
 
+    _validate_response_json(response_json)
+
     event_results: list[Any] = response_json["results"]
 
     for result_index, event_result in enumerate(event_results):
+        # 응답 내 각 이벤트가 객체인지 확인
+        if not isinstance(event_result, dict):
+            raise InvalidEventViewResponseShapeError(
+                f"Event View 응답의 results[{result_index}] 는 객체여야 합니다."
+            )
+
         event_id = event_result.get("id")
 
         # Event Id 가 없는 경우
@@ -112,3 +124,24 @@ def analyze_event_view_response(
         observation_event_ids=sorted(observation_event_ids),
         issues=issues,
     )
+
+
+def _validate_response_json(response_json: Any) -> None:
+
+    # dict 검증
+    if not isinstance(response_json, dict):
+        raise InvalidEventViewResponseShapeError(
+            "Event View 응답의 최상위 값은 JSON 객체여야 합니다."
+        )
+
+    # results 존재 여부 검증
+    if "results" not in response_json:
+        raise InvalidEventViewResponseShapeError(
+            "Event View 응답에 results 필드가 없습니다."
+        )
+
+    # results 배열 여부 검증
+    if not isinstance(response_json["results"], list):
+        raise InvalidEventViewResponseShapeError(
+            "Event View 응답의 results 필드는 배열이어야 합니다."
+        )

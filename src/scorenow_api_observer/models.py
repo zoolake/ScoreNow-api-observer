@@ -10,6 +10,9 @@ class CaptureMetadata(BaseModel):
     """API 호출 한 번에 대한 부가 정보입니다."""
 
     schema_version: Literal[1] = 1
+    response_analysis_status: Literal[
+        "completed", "invalid_json", "invalid_response_shape"
+    ]
 
     captured_at: datetime
     provider: str

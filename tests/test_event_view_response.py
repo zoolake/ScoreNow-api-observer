@@ -1,7 +1,10 @@
 from typing import Any
 
+import pytest
+
 from scorenow_api_observer.event_view_response import (
     EventViewResponseIssue,
+    InvalidEventViewResponseShapeError,
     analyze_event_view_response,
 )
 
@@ -16,6 +19,25 @@ def _issue_values(
     return [
         (issue.code, issue.event_id, issue.result_indices) for issue in analysis_issues
     ]
+
+
+@pytest.mark.parametrize(
+    "response_json",
+    [
+        [],
+        {},
+        {"results": None},
+        {"results": ["not-an-object"]},
+    ],
+)
+def test_analyze_event_view_response_rejects_invalid_response_shape(
+    response_json: Any,
+) -> None:
+    with pytest.raises(InvalidEventViewResponseShapeError):
+        analyze_event_view_response(
+            requested_event_ids=["A"],
+            response_json=response_json,
+        )
 
 
 def test_analyze_event_view_response_with_requested_events() -> None:

@@ -40,6 +40,7 @@ def test_save_raw_response_and_metadata(
 
     metadata = CaptureMetadata(
         captured_at=captured_at,
+        response_analysis_status="completed",
         provider="betsapi",
         endpoint="v1/event/view",
         http_method="GET",
@@ -67,6 +68,7 @@ def test_save_raw_response_and_metadata(
 
     assert saved_metadata["provider"] == "betsapi"
     assert saved_metadata["schema_version"] == 1
+    assert saved_metadata["response_analysis_status"] == "completed"
     assert saved_metadata["requested_event_ids"] == ["1234567"]
     assert saved_metadata["returned_event_ids"] == ["1234567"]
     assert saved_metadata["response_issues"] == []
@@ -81,6 +83,7 @@ def test_load_capture_metadata_reads_current_schema_without_raw_file(
 ) -> None:
     metadata = CaptureMetadata(
         captured_at=datetime(2026, 9, 9, 15, 0, tzinfo=UTC),
+        response_analysis_status="completed",
         provider="betsapi",
         endpoint="/v1/event/view",
         http_method="GET",
@@ -140,6 +143,7 @@ def test_load_capture_metadata_converts_legacy_schema_using_raw_response(
     loaded_metadata = load_capture_metadata(metadata_path)
 
     assert loaded_metadata.schema_version == 1
+    assert loaded_metadata.response_analysis_status == "completed"
     assert loaded_metadata.requested_event_ids == ["A", "B"]
     assert loaded_metadata.returned_event_ids == ["A", "C", "C"]
     assert loaded_metadata.response_issues == [
@@ -156,6 +160,7 @@ def test_load_capture_metadata_rejects_null_schema_version(tmp_path: Path) -> No
         json.dumps(
             {
                 "schema_version": None,
+                "response_analysis_status": "completed",
                 "captured_at": "2026-09-09T15:00:00Z",
                 "provider": "betsapi",
                 "endpoint": "/v1/event/view",

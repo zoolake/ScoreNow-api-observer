@@ -22,6 +22,7 @@ def _capture(
 ) -> CaptureMetadata:
     return CaptureMetadata(
         captured_at=captured_at,
+        response_analysis_status="completed",
         provider="betsapi",
         endpoint="/v1/event/view",
         http_method="GET",

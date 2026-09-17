@@ -103,6 +103,7 @@ def load_capture_metadata(metadata_path: Path) -> CaptureMetadata:
 
         return CaptureMetadata(
             captured_at=metadata_json["captured_at"],
+            response_analysis_status="completed",
             provider=metadata_json["provider"],
             endpoint=metadata_json["endpoint"],
             http_method=metadata_json["http_method"],

@@ -5,6 +5,10 @@ from pathlib import Path
 import httpx
 
 from scorenow_api_observer.bets_api_client import EVENT_VIEW_ENDPOINT, get_event_view
+from scorenow_api_observer.event_view_response import (
+    InvalidEventViewResponseShapeError,
+    analyze_event_view_response,
+)
 from scorenow_api_observer.models import CaptureMetadata
 from scorenow_api_observer.storage import save_capture_metadata, save_raw_response
 
@@ -35,18 +39,44 @@ def capture_event_view(
 
     captured_at = datetime.now(UTC)
 
+    # 응답 원본 저장
     raw_file_path = save_raw_response(
         event_id=event_id,
         response_body=response.content,
         captured_at=captured_at,
     )
 
+    # 응답 분석
+    try:
+        response_json = response.json()
+    except ValueError:
+        response_analysis_status = "invalid_json"
+        returned_event_ids = []
+        response_issues = []
+    else:
+        try:
+            analysis = analyze_event_view_response(
+                requested_event_ids=[event_id],
+                response_json=response_json,
+            )
+        except InvalidEventViewResponseShapeError:
+            response_analysis_status = "invalid_response_shape"
+            returned_event_ids = []
+            response_issues = []
+        else:
+            response_analysis_status = "completed"
+            returned_event_ids = analysis.returned_event_ids
+            response_issues = analysis.issues
+
     metadata = CaptureMetadata(
         captured_at=captured_at,
+        response_analysis_status=response_analysis_status,
         provider="betsapi",
         endpoint=EVENT_VIEW_ENDPOINT,
         http_method="GET",
-        event_ids=[event_id],
+        requested_event_ids=[event_id],
+        returned_event_ids=returned_event_ids,
+        response_issues=response_issues,
         http_status_code=response.status_code,
         elapsed_ms=round(response.elapsed.total_seconds() * 1000, 2),
         response_size_bytes=len(response.content),
