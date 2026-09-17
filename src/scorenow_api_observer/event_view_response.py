@@ -7,6 +7,20 @@ class InvalidEventViewResponseShapeError(ValueError):
 
 
 @dataclass(frozen=True)
+class ObservableEvent:
+    """EventObservation을 생성할 수 있는 이벤트의 원문 위치입니다.
+
+    Attributes:
+        event_id: View API 응답에서 식별한 이벤트 ID입니다.
+        result_index: View API 응답의 results 배열에서 이벤트가 위치한
+            0부터 시작하는 인덱스입니다.
+    """
+
+    event_id: str
+    result_index: int
+
+
+@dataclass(frozen=True)
 class EventViewResponseIssue:
     """Event View 응답을 요청 내용과 대조하며 발견한 이상 현상입니다.
 
@@ -30,14 +44,14 @@ class EventViewResponseAnalysis:
     Attributes:
         returned_event_ids: 응답에서 식별한 이벤트 ID입니다. 응답 순서와 중복을
             그대로 보존하며, 요청하지 않은 이벤트 ID도 포함합니다.
-        observation_event_ids: ID가 존재하고 응답 안에서 중복되지 않아
-            EventObservation을 만들 수 있는 이벤트 ID입니다. 요청하지 않은
+        observable_events: ID가 존재하고 응답 안에서 중복되지 않아
+            EventObservation을 만들 수 있는 이벤트입니다. 요청하지 않은
             이벤트라도 이 조건을 만족하면 포함합니다.
         issues: 응답을 요청 내용과 대조하며 발견한 이상 현상입니다.
     """
 
     returned_event_ids: list[str]
-    observation_event_ids: list[str]
+    observable_events: list[ObservableEvent]
     issues: list[EventViewResponseIssue]
 
 
@@ -88,8 +102,8 @@ def analyze_event_view_response(
 
     # 응답 Event Id 가 중복되는 경우
     duplicate_event_ids: set[str] = set()
-    for event_id, result_indices in result_indices_by_event_id.items():
-        if len(result_indices) > 1:
+    for event_id, result_index in result_indices_by_event_id.items():
+        if len(result_index) > 1:
             duplicate_event_ids.add(event_id)
 
     # 분류결과 기반 issue 생성
@@ -116,12 +130,22 @@ def analyze_event_view_response(
             )
         )
 
-    # observation_event_ids 계산
-    observation_event_ids = returned_event_id_set - duplicate_event_ids
+    # observable_event_ids 계산
+    observable_event_ids = returned_event_id_set - duplicate_event_ids
+
+    observable_events: list[ObservableEvent] = []
+    for observation_event_id in sorted(observable_event_ids):
+        result_index = result_indices_by_event_id[observation_event_id]
+        observable_events.append(
+            ObservableEvent(
+                event_id=observation_event_id,
+                result_index=result_index[0],
+            )
+        )
 
     return EventViewResponseAnalysis(
         returned_event_ids=returned_event_ids,
-        observation_event_ids=sorted(observation_event_ids),
+        observable_events=observable_events,
         issues=issues,
     )
 

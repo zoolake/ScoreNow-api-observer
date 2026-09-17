@@ -5,11 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from scorenow_api_observer.event_view_response import analyze_event_view_response
-from scorenow_api_observer.models import CaptureMetadata, StructureChangeRecord
+from scorenow_api_observer.models import (
+    CaptureMetadata,
+    EventObservation,
+    StructureChangeRecord,
+)
 
 RAW_DATA_DIRECTORY = Path("data/raw/event-view")
 METADATA_DIRECTORY = Path("data/metadata/event-view")
 STRUCTURE_CHANGE_DIRECTORY = Path("data/changes/event-view")
+OBSERVATION_DIRECTORY = Path("data/observations/event-view")
 
 
 def save_raw_response(
@@ -76,6 +81,25 @@ def save_structure_change_record(
             f.write(record_json + "\n")
     except FileExistsError:
         pass
+
+    return output_path
+
+
+def save_event_observation(
+    observation: EventObservation,
+    base_directory: Path = OBSERVATION_DIRECTORY,
+) -> Path:
+    """이벤트 Observation을 이벤트 ID별 디렉터리에 저장합니다."""
+
+    safe_event_id = _to_safe_file_name(observation.event_id)
+
+    output_directory = base_directory / safe_event_id
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_directory / Path(observation.capture_metadata_file_path).name
+
+    observation_json = observation.model_dump_json(indent=2)
+    output_path.write_text(observation_json + "\n", encoding="utf-8")
 
     return output_path
 

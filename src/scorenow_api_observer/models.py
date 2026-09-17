@@ -55,3 +55,11 @@ class StructureChangeRecord(BaseModel):
     added_paths: list[str]
     removed_paths: list[str]
     type_changes: list[TypeChangeRecord]
+
+
+class EventObservation(BaseModel):
+    """Capture 응답 안의 특정 이벤트를 찾기 위한 참조 정보입니다."""
+
+    event_id: str
+    capture_metadata_file_path: str
+    result_index: int = Field(ge=0)

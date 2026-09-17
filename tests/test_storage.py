@@ -8,12 +8,14 @@ from pydantic import ValidationError
 from scorenow_api_observer.event_view_response import EventViewResponseIssue
 from scorenow_api_observer.models import (
     CaptureMetadata,
+    EventObservation,
     StructureChangeRecord,
     TypeChangeRecord,
 )
 from scorenow_api_observer.storage import (
     load_capture_metadata,
     save_capture_metadata,
+    save_event_observation,
     save_raw_response,
     save_structure_change_record,
 )
@@ -180,6 +182,48 @@ def test_load_capture_metadata_rejects_null_schema_version(tmp_path: Path) -> No
 
     with pytest.raises(ValidationError):
         load_capture_metadata(metadata_path)
+
+
+def test_save_event_observation_uses_event_directory_and_capture_file_name(
+    tmp_path: Path,
+) -> None:
+    observation = EventObservation(
+        event_id="A/B",
+        capture_metadata_file_path=("data/metadata/event-view/2026-09-18/capture.json"),
+        result_index=2,
+    )
+
+    saved_path = save_event_observation(observation, tmp_path / "observations")
+
+    assert saved_path == tmp_path / "observations" / "A_B" / "capture.json"
+    assert (
+        EventObservation.model_validate_json(saved_path.read_text(encoding="utf-8"))
+        == observation
+    )
+
+
+def test_save_event_observation_overwrites_recreated_observation(
+    tmp_path: Path,
+) -> None:
+    original = EventObservation(
+        event_id="A",
+        capture_metadata_file_path="data/metadata/capture.json",
+        result_index=0,
+    )
+    recreated = EventObservation(
+        event_id="A",
+        capture_metadata_file_path="data/metadata/capture.json",
+        result_index=1,
+    )
+
+    original_path = save_event_observation(original, tmp_path / "observations")
+    recreated_path = save_event_observation(recreated, tmp_path / "observations")
+
+    assert recreated_path == original_path
+    assert (
+        EventObservation.model_validate_json(recreated_path.read_text(encoding="utf-8"))
+        == recreated
+    )
 
 
 def test_save_structure_change_record_uses_current_capture_date_and_file_name(
