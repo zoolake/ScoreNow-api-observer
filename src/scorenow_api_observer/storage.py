@@ -1,7 +1,10 @@
+import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+from scorenow_api_observer.event_view_response import analyze_event_view_response
 from scorenow_api_observer.models import CaptureMetadata, StructureChangeRecord
 
 RAW_DATA_DIRECTORY = Path("data/raw/event-view")
@@ -75,6 +78,45 @@ def save_structure_change_record(
         pass
 
     return output_path
+
+
+def load_json_file(file_path: Path) -> Any:
+    """저장된 원문 JSON 파일을 읽습니다."""
+
+    file_text = file_path.read_text(encoding="utf-8")
+    return json.loads(file_text)
+
+
+def load_capture_metadata(metadata_path: Path) -> CaptureMetadata:
+    metadata_text = metadata_path.read_text(encoding="utf-8")
+    metadata_json = json.loads(metadata_text)
+
+    if "schema_version" not in metadata_json:
+        requested_event_ids: list[str] = metadata_json["event_ids"]
+
+        raw_file_path = metadata_json["raw_file_path"]
+        raw_file = load_json_file(Path(raw_file_path))
+
+        event_view_response_analysis = analyze_event_view_response(
+            requested_event_ids=requested_event_ids, response_json=raw_file
+        )
+
+        return CaptureMetadata(
+            captured_at=metadata_json["captured_at"],
+            provider=metadata_json["provider"],
+            endpoint=metadata_json["endpoint"],
+            http_method=metadata_json["http_method"],
+            requested_event_ids=requested_event_ids,
+            returned_event_ids=event_view_response_analysis.returned_event_ids,
+            response_issues=event_view_response_analysis.issues,
+            http_status_code=metadata_json["http_status_code"],
+            elapsed_ms=metadata_json["elapsed_ms"],
+            response_size_bytes=metadata_json["response_size_bytes"],
+            content_type=metadata_json["content_type"],
+            raw_file_path=raw_file_path,
+        )
+
+    return CaptureMetadata.model_validate(metadata_json)
 
 
 def _to_safe_file_name(value: str) -> str:

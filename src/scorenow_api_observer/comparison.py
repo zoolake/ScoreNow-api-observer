@@ -1,4 +1,3 @@
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +8,7 @@ from scorenow_api_observer.models import (
     StructureChangeRecord,
     TypeChangeRecord,
 )
-from scorenow_api_observer.storage import METADATA_DIRECTORY
+from scorenow_api_observer.storage import METADATA_DIRECTORY, load_json_file
 
 
 @dataclass(frozen=True)
@@ -90,13 +89,6 @@ def find_previous_capture(
     candidates.sort(key=lambda candidate: candidate.captured_at)
 
     return candidates[-1]
-
-
-def load_json_file(file_path: Path) -> Any:
-    """저장된 원문 JSON 파일을 읽습니다."""
-
-    file_text = file_path.read_text(encoding="utf-8")
-    return json.loads(file_text)
 
 
 def compare_json_structures(

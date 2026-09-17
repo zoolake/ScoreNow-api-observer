@@ -1,16 +1,24 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from scorenow_api_observer.event_view_response import EventViewResponseIssue
 
 
 class CaptureMetadata(BaseModel):
     """API 호출 한 번에 대한 부가 정보입니다."""
 
+    schema_version: Literal[1] = 1
+
     captured_at: datetime
     provider: str
     endpoint: str
     http_method: str
-    event_ids: list[str]
+
+    requested_event_ids: list[str]
+    returned_event_ids: list[str]
+    response_issues: list[EventViewResponseIssue]
 
     http_status_code: int = Field(
         ge=100,
