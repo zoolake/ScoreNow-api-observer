@@ -68,8 +68,15 @@ def collect(
             err=True,
         )
         raise typer.Exit(code=1) from None
+    except OSError:
+        typer.echo(
+            "파일 저장에 실패했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
 
     _print_capture_summary(result)
+    _print_observation_save_failures(result)
 
     # HTTP status code : 4xx, 5xx
     if result.response.is_error:
@@ -137,10 +144,13 @@ def watch(
                 )
             except httpx.RequestError:
                 typer.echo("API 서버에 연결하지 못했습니다.", err=True)
+            except OSError:
+                typer.echo("파일 저장에 실패했습니다.", err=True)
             else:
                 saved_count += 1
 
                 _print_capture_summary(result)
+                _print_observation_save_failures(result)
 
                 if result.response.is_error:
                     typer.echo("API가 오류 응답을 반환했습니다.", err=True)
@@ -277,6 +287,24 @@ def _print_type_changes(type_changes: list) -> None:
         current_types = ", ".join(sorted(type_change.current_types))
 
         typer.echo(f" ~ {type_change.path}: {previous_types} → {current_types}")
+
+
+def _print_observation_save_failures(result: CaptureResult) -> None:
+    if not result.observation_save_failures:
+        return
+
+    failure_count = len(result.observation_save_failures)
+    typer.echo("")
+    typer.echo(
+        f"Event Observation 저장에 실패한 {failure_count} 건이 존재합니다.",
+        err=True,
+    )
+
+    for save_failure in result.observation_save_failures:
+        typer.echo(
+            f"실패 Event ID:{save_failure.event_id} / 사유: {save_failure.error_message}",
+            err=True,
+        )
 
 
 if __name__ == "__main__":

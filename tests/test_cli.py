@@ -7,7 +7,10 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
-from scorenow_api_observer.collector import CaptureResult
+from scorenow_api_observer.collector import (
+    CaptureResult,
+    EventObservationSaveFailure,
+)
 from scorenow_api_observer.comparison import CaptureComparison, StructureComparison
 from scorenow_api_observer.models import CaptureMetadata, StructureChangeRecord
 
@@ -39,12 +42,17 @@ def _capture(
     )
 
 
-def _capture_result(current_capture: CaptureMetadata) -> CaptureResult:
+def _capture_result(
+    current_capture: CaptureMetadata,
+    *,
+    observation_save_failures: list[EventObservationSaveFailure] | None = None,
+) -> CaptureResult:
     return CaptureResult(
         response=httpx.Response(200, json={"success": 1}),
         raw_file_path=Path(current_capture.raw_file_path),
         metadata_file_path=Path("data/metadata/current.json"),
         metadata=current_capture,
+        observation_save_failures=observation_save_failures or [],
     )
 
 
@@ -61,6 +69,106 @@ def _comparison(
         current_capture=current_capture,
         structure_comparison=structure_comparison,
     )
+
+
+def test_collect_exits_when_capture_storage_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_capture(**_kwargs: str) -> CaptureResult:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", fail_to_capture)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["collect", "--event-id", "123"],
+    )
+
+    assert result.exit_code == 1
+    assert "파일 저장에 실패했습니다." in result.output
+
+
+def test_watch_continues_after_capture_storage_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    capture_result = _capture_result(current_capture)
+    capture_count = 0
+    sleep_calls: list[float] = []
+
+    def capture_event_view(**_kwargs: str) -> CaptureResult:
+        nonlocal capture_count
+        capture_count += 1
+        if capture_count == 1:
+            raise OSError("disk full")
+        return capture_result
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+    monkeypatch.setattr(
+        cli,
+        "compare_with_previous_capture",
+        lambda _event_id, _current_capture: None,
+    )
+    monkeypatch.setattr(cli.time, "sleep", sleep_calls.append)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch", "--event-id", "123", "--interval", "7", "--count", "2"],
+    )
+
+    assert result.exit_code == 0
+    assert capture_count == 2
+    assert sleep_calls == [7]
+    assert "파일 저장에 실패했습니다." in result.output
+    assert "호출: 2회 / 저장: 1개" in result.output
+
+
+def test_watch_compares_capture_after_observation_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    capture_result = _capture_result(
+        current_capture,
+        observation_save_failures=[
+            EventObservationSaveFailure(
+                event_id="123",
+                error_message="disk full",
+            )
+        ],
+    )
+    compared_captures: list[tuple[str, CaptureMetadata]] = []
+
+    def compare_with_previous_capture(
+        event_id: str,
+        capture: CaptureMetadata,
+    ) -> None:
+        compared_captures.append((event_id, capture))
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
+    monkeypatch.setattr(
+        cli,
+        "compare_with_previous_capture",
+        compare_with_previous_capture,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch", "--event-id", "123", "--count", "1"],
+    )
+
+    assert result.exit_code == 0
+    assert compared_captures == [("123", current_capture)]
+    assert "Event Observation 저장에 실패한 1 건이 존재합니다." in result.output
+    assert "실패 Event ID:123 / 사유: disk full" in result.output
 
 
 def test_watch_waits_between_captures_when_structure_has_not_changed(
