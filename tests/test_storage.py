@@ -262,7 +262,7 @@ def test_load_event_observation_rejects_negative_result_index(
         load_event_observation(observation_path)
 
 
-def test_save_structure_change_record_uses_current_capture_date_and_file_name(
+def test_save_structure_change_record_uses_event_id_date_and_capture_file_name(
     tmp_path: Path,
 ) -> None:
     record = StructureChangeRecord(
@@ -292,6 +292,7 @@ def test_save_structure_change_record_uses_current_capture_date_and_file_name(
     assert saved_path == (
         tmp_path
         / "changes"
+        / "1234567"
         / "2026-09-09"
         / "20260909T150000000000Z_event-1234567.json"
     )
@@ -317,7 +318,7 @@ def test_save_structure_change_record_does_not_overwrite_existing_file(
         removed_paths=[],
         type_changes=[],
     )
-    existing_path = tmp_path / "changes" / "2026-09-09" / "current.json"
+    existing_path = tmp_path / "changes" / "1234567" / "2026-09-09" / "current.json"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_text("existing contents", encoding="utf-8")
 
@@ -325,3 +326,57 @@ def test_save_structure_change_record_does_not_overwrite_existing_file(
 
     assert saved_path == existing_path
     assert existing_path.read_text(encoding="utf-8") == "existing contents"
+
+
+def test_save_structure_change_record_uses_safe_event_id_directory(
+    tmp_path: Path,
+) -> None:
+    record = StructureChangeRecord(
+        detected_at=datetime(2026, 9, 9, 15, 0, 1, tzinfo=UTC),
+        event_id="A/B",
+        previous_captured_at=datetime(2026, 9, 9, 14, 59, tzinfo=UTC),
+        current_captured_at=datetime(2026, 9, 9, 15, 0, tzinfo=UTC),
+        previous_raw_file_path="data/raw/previous.json",
+        current_raw_file_path="data/raw/current.json",
+        added_paths=["$.new"],
+        removed_paths=[],
+        type_changes=[],
+    )
+
+    saved_path = save_structure_change_record(record, tmp_path / "changes")
+
+    assert saved_path == (tmp_path / "changes" / "A_B" / "2026-09-09" / "current.json")
+
+
+def test_save_structure_change_record_separates_events_in_same_capture(
+    tmp_path: Path,
+) -> None:
+    record_a = StructureChangeRecord(
+        detected_at=datetime(2026, 9, 9, 15, 0, 1, tzinfo=UTC),
+        event_id="A",
+        previous_captured_at=datetime(2026, 9, 9, 14, 59, tzinfo=UTC),
+        current_captured_at=datetime(2026, 9, 9, 15, 0, tzinfo=UTC),
+        previous_raw_file_path="data/raw/previous.json",
+        current_raw_file_path="data/raw/current.json",
+        added_paths=["$.new"],
+        removed_paths=[],
+        type_changes=[],
+    )
+    record_c = record_a.model_copy(update={"event_id": "C"})
+
+    saved_path_a = save_structure_change_record(record_a, tmp_path / "changes")
+    saved_path_c = save_structure_change_record(record_c, tmp_path / "changes")
+
+    assert saved_path_a != saved_path_c
+    assert (
+        StructureChangeRecord.model_validate_json(
+            saved_path_a.read_text(encoding="utf-8")
+        )
+        == record_a
+    )
+    assert (
+        StructureChangeRecord.model_validate_json(
+            saved_path_c.read_text(encoding="utf-8")
+        )
+        == record_c
+    )
