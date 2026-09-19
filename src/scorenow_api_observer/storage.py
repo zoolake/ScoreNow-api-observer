@@ -112,6 +112,8 @@ def load_json_file(file_path: Path) -> Any:
 
 
 def load_capture_metadata(metadata_path: Path) -> CaptureMetadata:
+    """저장된 메타데이터 JSON 파일을 읽습니다."""
+
     metadata_text = metadata_path.read_text(encoding="utf-8")
     metadata_json = json.loads(metadata_text)
 
@@ -142,6 +144,15 @@ def load_capture_metadata(metadata_path: Path) -> CaptureMetadata:
         )
 
     return CaptureMetadata.model_validate(metadata_json)
+
+
+def load_event_observation(observation_path: Path) -> EventObservation:
+    """저장된 Event Observation JSON 파일을 읽습니다."""
+
+    observation_text = observation_path.read_text(encoding="utf-8")
+    observation_json = json.loads(observation_text)
+
+    return EventObservation.model_validate(observation_json)
 
 
 def _to_safe_file_name(value: str) -> str:

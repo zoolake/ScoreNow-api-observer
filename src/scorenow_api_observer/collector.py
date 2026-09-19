@@ -19,19 +19,26 @@ from scorenow_api_observer.storage import (
 
 @dataclass(frozen=True)
 class EventObservationSaveFailure:
+    """EventObservation 저장에 실패한 이벤트와 원인입니다."""
+
     event_id: str
     error_message: str
 
 
 @dataclass(frozen=True)
 class CaptureResult:
-    """API 호출과 저장 결과입니다."""
+    """한 번의 API 호출에서 생성된 Capture와 Observation 처리 결과입니다.
+
+    event_observations에는 저장 성공 여부와 관계없이 생성된 Observation이 포함되며,
+    저장 실패 내역은 observation_save_failures에 별도로 기록됩니다.
+    """
 
     response: httpx.Response
     raw_file_path: Path
     metadata_file_path: Path
     metadata: CaptureMetadata
     observation_save_failures: list[EventObservationSaveFailure]
+    event_observations: list[EventObservation]
 
 
 def capture_event_view(
@@ -100,15 +107,16 @@ def capture_event_view(
 
     metadata_file_path = save_capture_metadata(metadata)
 
+    event_observations = []
     observation_save_failures: list[EventObservationSaveFailure] = []
     for observable_event in observable_events:
+        event_observation = EventObservation(
+            event_id=observable_event.event_id,
+            capture_metadata_file_path=str(metadata_file_path),
+            result_index=observable_event.result_index,
+        )
+        event_observations.append(event_observation)
         try:
-            event_observation = EventObservation(
-                event_id=observable_event.event_id,
-                capture_metadata_file_path=str(metadata_file_path),
-                result_index=observable_event.result_index,
-            )
-
             save_event_observation(event_observation)
         except OSError as error:
             observation_save_failures.append(
@@ -124,4 +132,5 @@ def capture_event_view(
         metadata_file_path=metadata_file_path,
         metadata=metadata,
         observation_save_failures=observation_save_failures,
+        event_observations=event_observations,
     )

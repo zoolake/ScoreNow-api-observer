@@ -1,21 +1,23 @@
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx
 import typer
+from pydantic import ValidationError
 
 from scorenow_api_observer.collector import CaptureResult, capture_event_view
 from scorenow_api_observer.comparison import (
     StructureComparison,
-    compare_json_structures,
-    compare_with_previous_capture,
+    compare_observations,
+    compare_with_previous_observation,
     convert_to_structure_change_record,
-    find_latest_captures,
-    load_json_file,
+    find_latest_observations,
 )
-from scorenow_api_observer.models import CaptureMetadata
+from scorenow_api_observer.event_observation import (
+    InvalidEventObservationReferenceError,
+)
+from scorenow_api_observer.models import EventObservation
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.storage import save_structure_change_record
 
@@ -155,9 +157,8 @@ def watch(
                 if result.response.is_error:
                     typer.echo("API가 오류 응답을 반환했습니다.", err=True)
                 else:
-                    _compare_and_save_structure_change(
-                        event_id=event_id, current_capture=result.metadata
-                    )
+                    for observation in result.event_observations:
+                        _compare_and_save_structure_change(observation)
 
             if count is not None and attempt_count >= count:
                 break
@@ -188,35 +189,31 @@ def compare(
 ) -> None:
     """저장된 동일 경기의 최근 응답 두 개를 비교하여 구조 변화를 출력합니다."""
 
-    captures = find_latest_captures(event_id)
+    try:
+        observations = find_latest_observations(event_id)
 
-    if len(captures) < 2:
-        typer.echo("비교하려면 동일 경기의 응답이 최소 2개 필요합니다.", err=True)
+        if len(observations) < 2:
+            typer.echo("비교하려면 동일 경기의 응답이 최소 2개 필요합니다.", err=True)
+            raise typer.Exit(code=1)
+
+        previous_observation = observations[0]
+        current_observation = observations[1]
+
+        comparison = compare_observations(previous_observation, current_observation)
+    except (
+        OSError,
+        json.JSONDecodeError,
+        InvalidEventObservationReferenceError,
+        ValidationError,
+    ) as error:
+        typer.echo(f"이벤트 구조 비교 과정 중에 예외가 발생했습니다. {error}", err=True)
         raise typer.Exit(code=1)
 
-    previous_capture = captures[0]
-    current_capture = captures[1]
-
-    previous_path = Path(previous_capture.raw_file_path)
-    current_path = Path(current_capture.raw_file_path)
-
-    try:
-        previous_data = load_json_file(previous_path)
-        current_data = load_json_file(current_path)
-    except OSError, json.JSONDecodeError:
-        typer.echo(
-            "저장된 원문 파일을 읽거나 JSON 으로 변환하는데 실패했습니다.", err=True
-        )
-        raise typer.Exit(code=1) from None
-
-    result = compare_json_structures(previous_data, current_data)
-
-    typer.echo(f"경기 ID: {event_id}")
-    typer.echo(f"직전 응답: {previous_capture.captured_at.isoformat()}")
-    typer.echo(f"최신 응답: {current_capture.captured_at.isoformat()}")
-
     typer.echo("")
-    _print_structure_comparison(result)
+    typer.echo(f"경기 ID: {comparison.event_id}")
+    typer.echo(f"직전 응답: {comparison.previous_capture.captured_at.isoformat()}")
+    typer.echo(f"최신 응답: {comparison.current_capture.captured_at.isoformat()}")
+    _print_structure_comparison(comparison.structure_comparison)
 
 
 def _print_structure_comparison(result: StructureComparison) -> None:
@@ -231,19 +228,27 @@ def _print_structure_comparison(result: StructureComparison) -> None:
     _print_type_changes(result.type_changes)
 
 
-def _compare_and_save_structure_change(
-    event_id: str, current_capture: CaptureMetadata
-) -> None:
-    """현재 수집과 직전 수집을 비교하고 구조 변화가 있으면 저장합니다."""
+def _compare_and_save_structure_change(current_observation: EventObservation) -> None:
+    """현재 Observation과 직전 Observation을 비교하고 구조 변화가 있으면 저장합니다."""
 
     try:
-        comparison = compare_with_previous_capture(event_id, current_capture)
-    except OSError, json.JSONDecodeError:
-        typer.echo("저장된 응답을 읽거나, 비교하지 못했습니다.", err=True)
+        comparison = compare_with_previous_observation(current_observation)
+    except (
+        OSError,
+        json.JSONDecodeError,
+        InvalidEventObservationReferenceError,
+        ValidationError,
+    ):
+        typer.echo(
+            f"경기 ID {current_observation.event_id}의 저장된 응답을 읽거나 비교하는데 실패하였습니다.",
+            err=True,
+        )
         return
 
     if comparison is None:
-        typer.echo("직전 응답이 없어 구조 비교를 생략합니다.")
+        typer.echo(
+            f"경기 ID {current_observation.event_id}의 직전 응답이 없어 구조 비교를 생략합니다."
+        )
         return
 
     record = convert_to_structure_change_record(comparison, datetime.now(UTC))
@@ -257,7 +262,7 @@ def _compare_and_save_structure_change(
         saved_path = save_structure_change_record(record)
     except OSError:
         typer.echo(
-            "🔴 응답 구조 변화 저장에 실패하였습니다.",
+            f"경기 ID {current_observation.event_id}의 응답 구조 변화 저장에 실패하였습니다.",
             err=True,
         )
         return

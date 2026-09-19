@@ -3,15 +3,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
+from scorenow_api_observer.event_observation import extract_observed_event
 from scorenow_api_observer.models import (
     CaptureMetadata,
+    EventObservation,
     StructureChangeRecord,
     TypeChangeRecord,
 )
 from scorenow_api_observer.storage import (
-    METADATA_DIRECTORY,
+    OBSERVATION_DIRECTORY,
     load_capture_metadata,
+    load_event_observation,
     load_json_file,
 )
 
@@ -46,52 +48,6 @@ class CaptureComparison:
     previous_capture: CaptureMetadata
     current_capture: CaptureMetadata
     structure_comparison: StructureComparison
-
-
-def find_latest_captures(
-    event_id: str,
-    limit: int = 2,
-    base_directory: Path = METADATA_DIRECTORY,
-) -> list[CaptureMetadata]:
-    """특정 경기의 최근 호출 기록을 찾습니다."""
-
-    captures: list[CaptureMetadata] = []
-
-    for metadata_path in base_directory.rglob("*.json"):
-        metadata = load_capture_metadata(metadata_path)
-
-        if _contains_observable_event(metadata, event_id):
-            captures.append(metadata)
-
-    captures.sort(key=lambda capture: capture.captured_at)
-
-    return captures[-limit:]
-
-
-def find_previous_capture(
-    event_id: str,
-    current_capture: CaptureMetadata,
-    base_directory: Path = METADATA_DIRECTORY,
-) -> CaptureMetadata | None:
-    """전달받은 메타데이터의 직전 메타데이터를 찾습니다."""
-
-    candidates: list[CaptureMetadata] = []
-
-    for metadata_path in base_directory.rglob("*.json"):
-        metadata = load_capture_metadata(metadata_path)
-
-        if (
-            _contains_observable_event(metadata, event_id)
-            and metadata.captured_at < current_capture.captured_at
-        ):
-            candidates.append(metadata)
-
-    if len(candidates) == 0:
-        return None
-
-    candidates.sort(key=lambda candidate: candidate.captured_at)
-
-    return candidates[-1]
 
 
 def compare_json_structures(
@@ -131,31 +87,118 @@ def compare_json_structures(
     )
 
 
-def compare_with_previous_capture(
-    event_id: str,
-    current_capture: CaptureMetadata,
+def compare_with_previous_observation(
+    current_observation: EventObservation,
 ) -> CaptureComparison | None:
-    """현재 응답과 동일 경기의 직전 응답을 비교합니다."""
+    """현재 Observation이 가리키는 이벤트와 직전 Observation의 구조를 비교합니다."""
 
-    previous_capture = find_previous_capture(event_id, current_capture)
+    event_id = current_observation.event_id
 
-    if previous_capture is None:
+    current_metadata = load_capture_metadata(
+        Path(current_observation.capture_metadata_file_path)
+    )
+
+    previous_observation = find_previous_observation(
+        event_id,
+        current_metadata.captured_at,
+    )
+
+    if previous_observation is None:
         return None
 
-    previous_file_path = Path(previous_capture.raw_file_path)
-    current_file_path = Path(current_capture.raw_file_path)
+    return compare_observations(previous_observation, current_observation)
 
-    previous_data = load_json_file(previous_file_path)
-    current_data = load_json_file(current_file_path)
 
-    structure_comparison = compare_json_structures(previous_data, current_data)
+def compare_observations(
+    previous_observation: EventObservation,
+    current_observation: EventObservation,
+) -> CaptureComparison:
+    """두 Observation이 가리키는 동일 이벤트의 응답 구조를 비교합니다."""
+
+    if previous_observation.event_id != current_observation.event_id:
+        raise ValueError("두 Observation의 event_id가 일치하지 않습니다.")
+
+    previous_metadata = load_capture_metadata(
+        Path(previous_observation.capture_metadata_file_path)
+    )
+    current_metadata = load_capture_metadata(
+        Path(current_observation.capture_metadata_file_path)
+    )
+
+    previous_response_json = load_json_file(Path(previous_metadata.raw_file_path))
+    current_response_json = load_json_file(Path(current_metadata.raw_file_path))
+
+    previous_event = extract_observed_event(
+        observation=previous_observation,
+        response_json=previous_response_json,
+    )
+
+    current_event = extract_observed_event(
+        observation=current_observation,
+        response_json=current_response_json,
+    )
+
+    structure_comparison = compare_json_structures(previous_event, current_event)
 
     return CaptureComparison(
-        event_id=event_id,
-        previous_capture=previous_capture,
-        current_capture=current_capture,
+        event_id=current_observation.event_id,
+        previous_capture=previous_metadata,
+        current_capture=current_metadata,
         structure_comparison=structure_comparison,
     )
+
+
+def find_previous_observation(
+    event_id: str,
+    reference_captured_at: datetime,
+    base_directory: Path = OBSERVATION_DIRECTORY,
+) -> EventObservation | None:
+    """동일 이벤트에서 기준 시각보다 앞선 가장 최근 Observation을 찾습니다."""
+
+    observation_candidates: list[tuple[datetime, EventObservation]] = []
+
+    for observation_path in base_directory.rglob("*.json"):
+        observation = load_event_observation(observation_path)
+
+        if observation.event_id != event_id:
+            continue
+
+        metadata = load_capture_metadata(Path(observation.capture_metadata_file_path))
+
+        if metadata.captured_at < reference_captured_at:
+            observation_candidates.append((metadata.captured_at, observation))
+
+    if not observation_candidates:
+        return None
+
+    # captured_at 오름차순으로 정렬
+    observation_candidates.sort(key=lambda candidate: candidate[0])
+    return observation_candidates[-1][1]
+
+
+def find_latest_observations(
+    event_id: str,
+    limit: int = 2,
+    base_directory: Path = OBSERVATION_DIRECTORY,
+) -> list[EventObservation]:
+    """동일 이벤트의 최근 Observation을 오래된 순서로 최대 limit개 반환합니다."""
+
+    if limit < 1:
+        raise ValueError("limit은 1 이상이어야 합니다.")
+
+    observation_candidates: list[tuple[datetime, EventObservation]] = []
+
+    for observation_path in base_directory.rglob("*.json"):
+        observation = load_event_observation(observation_path)
+
+        if observation.event_id != event_id:
+            continue
+
+        metadata = load_capture_metadata(Path(observation.capture_metadata_file_path))
+        observation_candidates.append((metadata.captured_at, observation))
+
+    observation_candidates.sort(key=lambda candidate: candidate[0])
+    return [candidate[1] for candidate in observation_candidates[-limit:]]
 
 
 def convert_to_structure_change_record(
@@ -248,21 +291,3 @@ def _get_type_name(value: Any) -> str:
         return "number"
 
     return type(value).__name__
-
-
-def _contains_observable_event(metadata: CaptureMetadata, event_id: str) -> bool:
-    """Capture 응답에서 이벤트를 하나의 결과로 식별할 수 있는지 확인합니다."""
-
-    returned_event_ids: list[str] = metadata.returned_event_ids
-    issues: list[EventViewResponseIssue] = metadata.response_issues
-
-    # View API 에 의해 반환된 이벤트 ID 에 포함되지 않는 경우
-    if event_id not in returned_event_ids:
-        return False
-
-    # 이벤트 ID 가 중복으로 반환된 경우
-    for issue in issues:
-        if event_id == issue.event_id and issue.code == "duplicate_event_id":
-            return False
-
-    return True

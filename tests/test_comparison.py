@@ -7,11 +7,17 @@ from scorenow_api_observer.comparison import (
     CaptureComparison,
     StructureComparison,
     TypeChange,
+    compare_observations,
     convert_to_structure_change_record,
-    find_previous_capture,
+    find_latest_observations,
+    find_previous_observation,
 )
-from scorenow_api_observer.models import CaptureMetadata
-from scorenow_api_observer.storage import save_capture_metadata
+from scorenow_api_observer.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.storage import (
+    save_capture_metadata,
+    save_event_observation,
+    save_raw_response,
+)
 
 
 def _capture(
@@ -83,70 +89,264 @@ def test_has_changes_is_true_when_type_changes() -> None:
     assert comparison.has_changes is True
 
 
-def test_find_previous_capture_returns_none_without_earlier_capture(
+def test_find_previous_observation_returns_none_without_earlier_observation(
     tmp_path: Path,
 ) -> None:
-    current_capture = _capture(
-        event_id="123",
-        captured_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),
-        raw_file_path="data/raw/current.json",
+    result = find_previous_observation(
+        "123",
+        reference_captured_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),
+        base_directory=tmp_path / "observations",
     )
-
-    result = find_previous_capture("123", current_capture, tmp_path)
 
     assert result is None
 
 
-def test_find_previous_capture_selects_latest_earlier_capture(
+def test_find_previous_observation_selects_latest_earlier_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    base_directory = tmp_path / "metadata"
-    latest_earlier_capture = _capture(
+    metadata_directory = tmp_path / "metadata"
+    observation_directory = tmp_path / "observations"
+
+    def save_observation(
+        *,
+        event_id: str,
+        captured_at: datetime,
+        raw_file_name: str,
+    ) -> tuple[EventObservation, Path]:
+        metadata = _capture(
+            event_id=event_id,
+            captured_at=captured_at,
+            raw_file_path=str(tmp_path / "raw" / raw_file_name),
+        )
+        metadata_path = save_capture_metadata(metadata, metadata_directory)
+        observation = EventObservation(
+            event_id=event_id,
+            capture_metadata_file_path=str(metadata_path),
+            result_index=0,
+        )
+        observation_path = save_event_observation(
+            observation,
+            observation_directory,
+        )
+        return observation, observation_path
+
+    latest_earlier, latest_earlier_path = save_observation(
         event_id="123",
         captured_at=datetime(2026, 9, 13, 11, 0, tzinfo=UTC),
-        raw_file_path="data/raw/latest-earlier.json",
+        raw_file_name="latest-earlier.json",
     )
-    older_capture = _capture(
+    _, older_path = save_observation(
         event_id="123",
         captured_at=datetime(2026, 9, 13, 10, 0, tzinfo=UTC),
-        raw_file_path="data/raw/older.json",
+        raw_file_name="older.json",
     )
-    later_capture = _capture(
+    _, later_path = save_observation(
         event_id="123",
         captured_at=datetime(2026, 9, 13, 13, 0, tzinfo=UTC),
-        raw_file_path="data/raw/later.json",
+        raw_file_name="later.json",
     )
-    other_event_capture = _capture(
+    _, other_event_path = save_observation(
         event_id="456",
         captured_at=datetime(2026, 9, 13, 11, 30, tzinfo=UTC),
-        raw_file_path="data/raw/other-event.json",
+        raw_file_name="other-event.json",
     )
-
-    metadata_paths = [
-        save_capture_metadata(latest_earlier_capture, base_directory),
-        save_capture_metadata(older_capture, base_directory),
-        save_capture_metadata(later_capture, base_directory),
-        save_capture_metadata(other_event_capture, base_directory),
+    observation_paths = [
+        latest_earlier_path,
+        older_path,
+        later_path,
+        other_event_path,
     ]
 
-    def unordered_metadata_paths(_directory: Path, pattern: str) -> list[Path]:
+    def unordered_observation_paths(_directory: Path, pattern: str) -> list[Path]:
         assert pattern == "*.json"
-        return metadata_paths
+        return observation_paths
 
-    monkeypatch.setattr(type(base_directory), "rglob", unordered_metadata_paths)
-
-    result = find_previous_capture(
-        "123",
-        current_capture=_capture(
-            event_id="123",
-            captured_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),
-            raw_file_path="data/raw/current.json",
-        ),
-        base_directory=base_directory,
+    monkeypatch.setattr(
+        type(observation_directory),
+        "rglob",
+        unordered_observation_paths,
     )
 
-    assert result == latest_earlier_capture
+    result = find_previous_observation(
+        "123",
+        reference_captured_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),
+        base_directory=observation_directory,
+    )
+
+    assert result == latest_earlier
+
+
+def test_find_latest_observations_returns_empty_list_without_observations(
+    tmp_path: Path,
+) -> None:
+    result = find_latest_observations(
+        "123",
+        base_directory=tmp_path / "observations",
+    )
+
+    assert result == []
+
+
+def test_find_latest_observations_rejects_non_positive_limit(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="limit은 1 이상이어야 합니다"):
+        find_latest_observations(
+            "123",
+            limit=0,
+            base_directory=tmp_path / "observations",
+        )
+
+
+def test_find_latest_observations_selects_recent_observations_in_time_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata_directory = tmp_path / "metadata"
+    observation_directory = tmp_path / "observations"
+
+    def save_observation(
+        *,
+        event_id: str,
+        captured_at: datetime,
+        raw_file_name: str,
+    ) -> tuple[EventObservation, Path]:
+        metadata = _capture(
+            event_id=event_id,
+            captured_at=captured_at,
+            raw_file_path=str(tmp_path / "raw" / raw_file_name),
+        )
+        metadata_path = save_capture_metadata(metadata, metadata_directory)
+        observation = EventObservation(
+            event_id=event_id,
+            capture_metadata_file_path=str(metadata_path),
+            result_index=0,
+        )
+        observation_path = save_event_observation(
+            observation,
+            observation_directory,
+        )
+        return observation, observation_path
+
+    latest, latest_path = save_observation(
+        event_id="123",
+        captured_at=datetime(2026, 9, 13, 13, 0, tzinfo=UTC),
+        raw_file_name="latest.json",
+    )
+    previous, previous_path = save_observation(
+        event_id="123",
+        captured_at=datetime(2026, 9, 13, 11, 0, tzinfo=UTC),
+        raw_file_name="previous.json",
+    )
+    _, older_path = save_observation(
+        event_id="123",
+        captured_at=datetime(2026, 9, 13, 10, 0, tzinfo=UTC),
+        raw_file_name="older.json",
+    )
+    _, other_event_path = save_observation(
+        event_id="456",
+        captured_at=datetime(2026, 9, 13, 14, 0, tzinfo=UTC),
+        raw_file_name="other-event.json",
+    )
+    observation_paths = [
+        latest_path,
+        older_path,
+        other_event_path,
+        previous_path,
+    ]
+
+    def unordered_observation_paths(_directory: Path, pattern: str) -> list[Path]:
+        assert pattern == "*.json"
+        return observation_paths
+
+    monkeypatch.setattr(
+        type(observation_directory),
+        "rglob",
+        unordered_observation_paths,
+    )
+
+    result = find_latest_observations(
+        "123",
+        limit=2,
+        base_directory=observation_directory,
+    )
+    limited_result = find_latest_observations(
+        "123",
+        limit=1,
+        base_directory=observation_directory,
+    )
+
+    assert result == [previous, latest]
+    assert limited_result == [latest]
+
+
+def test_compare_observations_compares_only_referenced_event(
+    tmp_path: Path,
+) -> None:
+    previous_captured_at = datetime(2026, 9, 13, 10, 0, tzinfo=UTC)
+    current_captured_at = datetime(2026, 9, 13, 11, 0, tzinfo=UTC)
+    previous_raw_path = save_raw_response(
+        event_id="A",
+        response_body=b'{"results":[{"id":"A","score":1},{"id":"B","old":true}]}',
+        captured_at=previous_captured_at,
+        base_directory=tmp_path / "raw",
+    )
+    current_raw_path = save_raw_response(
+        event_id="A",
+        response_body=b'{"results":[{"id":"A","score":2},{"id":"B","new":{}}]}',
+        captured_at=current_captured_at,
+        base_directory=tmp_path / "raw",
+    )
+    previous_metadata_path = save_capture_metadata(
+        _capture(
+            event_id="A",
+            captured_at=previous_captured_at,
+            raw_file_path=str(previous_raw_path),
+        ),
+        tmp_path / "metadata",
+    )
+    current_metadata_path = save_capture_metadata(
+        _capture(
+            event_id="A",
+            captured_at=current_captured_at,
+            raw_file_path=str(current_raw_path),
+        ),
+        tmp_path / "metadata",
+    )
+    previous_observation = EventObservation(
+        event_id="A",
+        capture_metadata_file_path=str(previous_metadata_path),
+        result_index=0,
+    )
+    current_observation = EventObservation(
+        event_id="A",
+        capture_metadata_file_path=str(current_metadata_path),
+        result_index=0,
+    )
+
+    result = compare_observations(previous_observation, current_observation)
+
+    assert result.event_id == "A"
+    assert result.previous_capture.captured_at == previous_captured_at
+    assert result.current_capture.captured_at == current_captured_at
+    assert result.structure_comparison.has_changes is False
+
+
+def test_compare_observations_rejects_different_event_ids() -> None:
+    previous_observation = EventObservation(
+        event_id="A",
+        capture_metadata_file_path="data/metadata/previous.json",
+        result_index=0,
+    )
+    current_observation = EventObservation(
+        event_id="B",
+        capture_metadata_file_path="data/metadata/current.json",
+        result_index=0,
+    )
+
+    with pytest.raises(ValueError, match="event_id가 일치하지 않습니다"):
+        compare_observations(previous_observation, current_observation)
 
 
 def test_convert_to_structure_change_record_returns_none_without_changes() -> None:

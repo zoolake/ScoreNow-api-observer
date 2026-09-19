@@ -102,6 +102,7 @@ def test_capture_event_view_analyzes_json_response(
             result_index=1,
         ),
     ]
+    assert result.event_observations == saved_observations
 
 
 def test_capture_event_view_saves_metadata_when_response_is_not_json(
@@ -122,6 +123,7 @@ def test_capture_event_view_saves_metadata_when_response_is_not_json(
     assert result.metadata.response_issues == []
     assert saved_metadata == [result.metadata]
     assert saved_observations == []
+    assert result.event_observations == []
 
 
 def test_capture_event_view_continues_after_observation_save_fails(
@@ -154,6 +156,18 @@ def test_capture_event_view_continues_after_observation_save_fails(
             error_message="disk full",
         )
     ]
+    assert result.event_observations == [
+        EventObservation(
+            event_id="A",
+            capture_metadata_file_path=str(tmp_path / "metadata.json"),
+            result_index=0,
+        ),
+        EventObservation(
+            event_id="C",
+            capture_metadata_file_path=str(tmp_path / "metadata.json"),
+            result_index=1,
+        ),
+    ]
 
 
 def test_capture_event_view_saves_metadata_when_response_shape_is_invalid(
@@ -177,3 +191,4 @@ def test_capture_event_view_saves_metadata_when_response_shape_is_invalid(
     assert result.metadata.response_issues == []
     assert saved_metadata == [result.metadata]
     assert saved_observations == []
+    assert result.event_observations == []

@@ -12,7 +12,14 @@ from scorenow_api_observer.collector import (
     EventObservationSaveFailure,
 )
 from scorenow_api_observer.comparison import CaptureComparison, StructureComparison
-from scorenow_api_observer.models import CaptureMetadata, StructureChangeRecord
+from scorenow_api_observer.event_observation import (
+    InvalidEventObservationReferenceError,
+)
+from scorenow_api_observer.models import (
+    CaptureMetadata,
+    EventObservation,
+    StructureChangeRecord,
+)
 
 
 class _FakeSettings:
@@ -46,13 +53,25 @@ def _capture_result(
     current_capture: CaptureMetadata,
     *,
     observation_save_failures: list[EventObservationSaveFailure] | None = None,
+    event_observations: list[EventObservation] | None = None,
 ) -> CaptureResult:
+    metadata_file_path = Path("data/metadata/current.json")
+    if event_observations is None:
+        event_observations = [
+            EventObservation(
+                event_id="123",
+                capture_metadata_file_path=str(metadata_file_path),
+                result_index=0,
+            )
+        ]
+
     return CaptureResult(
         response=httpx.Response(200, json={"success": 1}),
         raw_file_path=Path(current_capture.raw_file_path),
-        metadata_file_path=Path("data/metadata/current.json"),
+        metadata_file_path=metadata_file_path,
         metadata=current_capture,
         observation_save_failures=observation_save_failures or [],
+        event_observations=event_observations,
     )
 
 
@@ -89,6 +108,78 @@ def test_collect_exits_when_capture_storage_fails(
     assert "파일 저장에 실패했습니다." in result.output
 
 
+def test_compare_compares_latest_event_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_observation = EventObservation(
+        event_id="123",
+        capture_metadata_file_path="data/metadata/previous.json",
+        result_index=0,
+    )
+    current_observation = EventObservation(
+        event_id="123",
+        capture_metadata_file_path="data/metadata/current.json",
+        result_index=1,
+    )
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    comparison = _comparison(
+        current_capture,
+        StructureComparison(added_paths=["$.new"], removed_paths=[], type_changes=[]),
+    )
+    compared_observations: list[tuple[EventObservation, EventObservation]] = []
+
+    def find_latest_observations(event_id: str) -> list[EventObservation]:
+        assert event_id == "123"
+        return [previous_observation, current_observation]
+
+    def compare_observations(
+        previous: EventObservation,
+        current: EventObservation,
+    ) -> CaptureComparison:
+        compared_observations.append((previous, current))
+        return comparison
+
+    monkeypatch.setattr(cli, "find_latest_observations", find_latest_observations)
+    monkeypatch.setattr(cli, "compare_observations", compare_observations)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["compare", "--event-id", "123"],
+    )
+
+    assert result.exit_code == 0
+    assert compared_observations == [(previous_observation, current_observation)]
+    assert "경기 ID: 123" in result.output
+    assert "직전 응답: 2026-09-15T09:59:00+00:00" in result.output
+    assert "최신 응답: 2026-09-15T10:00:00+00:00" in result.output
+    assert "이번 응답에서 새로 보이는 경로: 1개" in result.output
+
+
+def test_compare_exits_when_observation_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_find_observations(_event_id: str) -> list[EventObservation]:
+        raise OSError("metadata missing")
+
+    monkeypatch.setattr(
+        cli,
+        "find_latest_observations",
+        fail_to_find_observations,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["compare", "--event-id", "123"],
+    )
+
+    assert result.exit_code == 1
+    assert "이벤트 구조 비교 과정 중에 예외가 발생했습니다." in result.output
+    assert "metadata missing" in result.output
+
+
 def test_watch_continues_after_capture_storage_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -111,8 +202,8 @@ def test_watch_continues_after_capture_storage_fails(
     monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
     monkeypatch.setattr(
         cli,
-        "compare_with_previous_capture",
-        lambda _event_id, _current_capture: None,
+        "compare_with_previous_observation",
+        lambda _current_observation: None,
     )
     monkeypatch.setattr(cli.time, "sleep", sleep_calls.append)
 
@@ -128,7 +219,7 @@ def test_watch_continues_after_capture_storage_fails(
     assert "호출: 2회 / 저장: 1개" in result.output
 
 
-def test_watch_compares_capture_after_observation_save_fails(
+def test_watch_compares_observation_after_observation_save_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current_capture = _capture(
@@ -144,20 +235,17 @@ def test_watch_compares_capture_after_observation_save_fails(
             )
         ],
     )
-    compared_captures: list[tuple[str, CaptureMetadata]] = []
+    compared_observations: list[EventObservation] = []
 
-    def compare_with_previous_capture(
-        event_id: str,
-        capture: CaptureMetadata,
-    ) -> None:
-        compared_captures.append((event_id, capture))
+    def compare_with_previous_observation(observation: EventObservation) -> None:
+        compared_observations.append(observation)
 
     monkeypatch.setattr(cli, "Settings", _FakeSettings)
     monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
     monkeypatch.setattr(
         cli,
-        "compare_with_previous_capture",
-        compare_with_previous_capture,
+        "compare_with_previous_observation",
+        compare_with_previous_observation,
     )
 
     result = CliRunner().invoke(
@@ -166,9 +254,105 @@ def test_watch_compares_capture_after_observation_save_fails(
     )
 
     assert result.exit_code == 0
-    assert compared_captures == [("123", current_capture)]
+    assert compared_observations == capture_result.event_observations
     assert "Event Observation 저장에 실패한 1 건이 존재합니다." in result.output
     assert "실패 Event ID:123 / 사유: disk full" in result.output
+
+
+def test_watch_compares_each_event_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    event_observations = [
+        EventObservation(
+            event_id="A",
+            capture_metadata_file_path="data/metadata/current.json",
+            result_index=0,
+        ),
+        EventObservation(
+            event_id="C",
+            capture_metadata_file_path="data/metadata/current.json",
+            result_index=1,
+        ),
+    ]
+    capture_result = _capture_result(
+        current_capture,
+        event_observations=event_observations,
+    )
+    compared_observations: list[EventObservation] = []
+
+    def compare_with_previous_observation(observation: EventObservation) -> None:
+        compared_observations.append(observation)
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
+    monkeypatch.setattr(
+        cli,
+        "compare_with_previous_observation",
+        compare_with_previous_observation,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch", "--event-id", "123", "--count", "1"],
+    )
+
+    assert result.exit_code == 0
+    assert compared_observations == event_observations
+
+
+def test_watch_continues_with_next_observation_after_comparison_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    event_observations = [
+        EventObservation(
+            event_id="A",
+            capture_metadata_file_path="data/metadata/current.json",
+            result_index=0,
+        ),
+        EventObservation(
+            event_id="C",
+            capture_metadata_file_path="data/metadata/current.json",
+            result_index=1,
+        ),
+    ]
+    capture_result = _capture_result(
+        current_capture,
+        event_observations=event_observations,
+    )
+    compared_event_ids: list[str] = []
+
+    def compare_with_previous_observation(observation: EventObservation) -> None:
+        compared_event_ids.append(observation.event_id)
+        if observation.event_id == "A":
+            raise InvalidEventObservationReferenceError("invalid reference")
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
+    monkeypatch.setattr(
+        cli,
+        "compare_with_previous_observation",
+        compare_with_previous_observation,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch", "--event-id", "123", "--count", "1"],
+    )
+
+    assert result.exit_code == 0
+    assert compared_event_ids == ["A", "C"]
+    assert (
+        "경기 ID A의 저장된 응답을 읽거나 비교하는데 실패하였습니다." in result.output
+    )
+    assert "경기 ID C의 직전 응답이 없어 구조 비교를 생략합니다." in result.output
 
 
 def test_watch_waits_between_captures_when_structure_has_not_changed(
@@ -187,8 +371,8 @@ def test_watch_waits_between_captures_when_structure_has_not_changed(
     monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
     monkeypatch.setattr(
         cli,
-        "compare_with_previous_capture",
-        lambda _event_id, _current_capture: comparison,
+        "compare_with_previous_observation",
+        lambda _current_observation: comparison,
     )
     monkeypatch.setattr(cli.time, "sleep", sleep_calls.append)
     monkeypatch.setattr(
@@ -230,8 +414,8 @@ def test_watch_saves_structure_change_record(
     monkeypatch.setattr(cli, "capture_event_view", lambda **_kwargs: capture_result)
     monkeypatch.setattr(
         cli,
-        "compare_with_previous_capture",
-        lambda _event_id, _current_capture: comparison,
+        "compare_with_previous_observation",
+        lambda _current_observation: comparison,
     )
     monkeypatch.setattr(cli, "save_structure_change_record", save_record)
 
@@ -274,8 +458,8 @@ def test_watch_continues_after_structure_change_record_save_fails(
     monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
     monkeypatch.setattr(
         cli,
-        "compare_with_previous_capture",
-        lambda _event_id, _current_capture: comparison,
+        "compare_with_previous_observation",
+        lambda _current_observation: comparison,
     )
     monkeypatch.setattr(cli, "save_structure_change_record", fail_to_save)
     monkeypatch.setattr(cli.time, "sleep", sleep_calls.append)

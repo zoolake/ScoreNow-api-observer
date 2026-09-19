@@ -14,6 +14,7 @@ from scorenow_api_observer.models import (
 )
 from scorenow_api_observer.storage import (
     load_capture_metadata,
+    load_event_observation,
     save_capture_metadata,
     save_event_observation,
     save_raw_response,
@@ -224,6 +225,41 @@ def test_save_event_observation_overwrites_recreated_observation(
         EventObservation.model_validate_json(recreated_path.read_text(encoding="utf-8"))
         == recreated
     )
+
+
+def test_load_event_observation_reads_saved_observation(tmp_path: Path) -> None:
+    observation = EventObservation(
+        event_id="A",
+        capture_metadata_file_path="data/metadata/capture.json",
+        result_index=1,
+    )
+    observation_path = save_event_observation(
+        observation,
+        tmp_path / "observations",
+    )
+
+    loaded_observation = load_event_observation(observation_path)
+
+    assert loaded_observation == observation
+
+
+def test_load_event_observation_rejects_negative_result_index(
+    tmp_path: Path,
+) -> None:
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(
+        json.dumps(
+            {
+                "event_id": "A",
+                "capture_metadata_file_path": "data/metadata/capture.json",
+                "result_index": -1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_event_observation(observation_path)
 
 
 def test_save_structure_change_record_uses_current_capture_date_and_file_name(
