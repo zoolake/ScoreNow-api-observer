@@ -64,11 +64,12 @@ def save_structure_change_record(
     record: StructureChangeRecord,
     base_directory: Path = STRUCTURE_CHANGE_DIRECTORY,
 ) -> Path:
-    """응답 구조 변경 정보를 저장합니다."""
+    """응답 구조 변경 정보를 이벤트 ID와 현재 수집 날짜별로 저장합니다."""
 
+    safe_event_id = _to_safe_file_name(record.event_id)
     date_directory = record.current_captured_at.strftime("%Y-%m-%d")
 
-    output_directory = base_directory / date_directory
+    output_directory = base_directory / safe_event_id / date_directory
     output_directory.mkdir(parents=True, exist_ok=True)
 
     raw_file_name = Path(record.current_raw_file_path).name
