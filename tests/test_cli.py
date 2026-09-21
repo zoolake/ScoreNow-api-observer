@@ -101,11 +101,64 @@ def test_collect_exits_when_capture_storage_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["collect", "--event-id", "123"],
+        ["collect", "--event-ids", "123"],
     )
 
     assert result.exit_code == 1
     assert "파일 저장에 실패했습니다." in result.output
+
+
+def test_collect_normalizes_multiple_event_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    capture_result = _capture_result(current_capture)
+    captured_requested_event_ids: list[list[str]] = []
+
+    def capture_event_view(
+        *,
+        base_url: str,
+        token: str,
+        requested_event_ids: list[str],
+    ) -> CaptureResult:
+        captured_requested_event_ids.append(requested_event_ids)
+        return capture_result
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["collect", "--event-ids", " B, A, B "],
+    )
+
+    assert result.exit_code == 0
+    assert captured_requested_event_ids == [["A", "B"]]
+
+
+def test_collect_rejects_invalid_event_ids_before_loading_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings_loaded = False
+
+    def load_settings() -> _FakeSettings:
+        nonlocal settings_loaded
+        settings_loaded = True
+        return _FakeSettings()
+
+    monkeypatch.setattr(cli, "Settings", load_settings)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["collect", "--event-ids", "A,,B"],
+    )
+
+    assert result.exit_code == 2
+    assert not settings_loaded
+    assert "이벤트 ID 입력이 올바르지 않습니다." in result.output
 
 
 def test_compare_compares_latest_event_observations(
@@ -209,7 +262,7 @@ def test_watch_continues_after_capture_storage_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--interval", "7", "--count", "2"],
+        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
     )
 
     assert result.exit_code == 0
@@ -250,7 +303,7 @@ def test_watch_compares_observation_after_observation_save_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--count", "1"],
     )
 
     assert result.exit_code == 0
@@ -297,7 +350,7 @@ def test_watch_compares_each_event_observation(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--count", "1"],
     )
 
     assert result.exit_code == 0
@@ -344,7 +397,7 @@ def test_watch_continues_with_next_observation_after_comparison_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--count", "1"],
     )
 
     assert result.exit_code == 0
@@ -383,7 +436,7 @@ def test_watch_waits_between_captures_when_structure_has_not_changed(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--interval", "7", "--count", "2"],
+        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
     )
 
     assert result.exit_code == 0
@@ -421,7 +474,7 @@ def test_watch_saves_structure_change_record(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--count", "1"],
     )
 
     assert result.exit_code == 0
@@ -466,7 +519,7 @@ def test_watch_continues_after_structure_change_record_save_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-id", "123", "--interval", "7", "--count", "2"],
+        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
     )
 
     assert result.exit_code == 0

@@ -287,13 +287,11 @@ def test_compare_observations_compares_only_referenced_event(
     previous_captured_at = datetime(2026, 9, 13, 10, 0, tzinfo=UTC)
     current_captured_at = datetime(2026, 9, 13, 11, 0, tzinfo=UTC)
     previous_raw_path = save_raw_response(
-        event_id="A",
         response_body=b'{"results":[{"id":"A","score":1},{"id":"B","old":true}]}',
         captured_at=previous_captured_at,
         base_directory=tmp_path / "raw",
     )
     current_raw_path = save_raw_response(
-        event_id="A",
         response_body=b'{"results":[{"id":"A","score":2},{"id":"B","new":{}}]}',
         captured_at=current_captured_at,
         base_directory=tmp_path / "raw",

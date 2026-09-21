@@ -47,12 +47,18 @@ BETS_API_TOKEN=your-token
 
 ScoreNow 개발 환경에서는 ScoreNow DB에 저장된 경기의 BETS `event_id`를 사용할 수도 있습니다. 외부 사용자는 BETS API 응답에서 직접 확인해야 합니다.
 
-아래 명령의 `BETS_EVENT_ID`는 실제로 확인한 값으로 교체합니다.
+한 번의 Event View 요청에는 이벤트 ID를 최대 10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`, `BETS_EVENT_ID_2`는 실제로 확인한 값으로 교체합니다.
 
 ### 5. 첫 응답 수집
 
 ```bash
-uv run observer collect --event-id BETS_EVENT_ID
+uv run observer collect --event-ids BETS_EVENT_ID_1
+```
+
+여러 이벤트를 한 번에 수집하려면 쉼표로 구분합니다.
+
+```bash
+uv run observer collect --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
 ```
 
 정상적으로 실행되면 HTTP 상태 코드와 다음 두 파일의 저장 위치가 출력됩니다.
@@ -64,21 +70,21 @@ data/metadata/event-view/YYYY-MM-DD/...
 
 ### 6. 반복 수집 및 구조 변화 관찰
 
-다음 예시는 같은 경기를 30초 간격으로 3회 수집합니다.
+다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
 ```bash
 uv run observer watch \
-  --event-id BETS_EVENT_ID \
+  --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 \
   --interval 30 \
   --count 3
 ```
 
-직전 응답이 있으면 매 수집 후 구조를 비교합니다. 변화가 발견된 경우에는 `data/changes/event-view` 아래에 변화 기록도 저장됩니다.
+매 호출의 원문과 메타데이터는 Capture 단위로 한 번 저장합니다. 응답에서 고유하게 식별할 수 있는 각 이벤트에는 EventObservation을 만들고, 이벤트별 직전 응답이 있으면 구조를 비교합니다. 변화가 발견된 경우에는 `data/changes/event-view` 아래에 이벤트별 변화 기록도 저장됩니다.
 
 호출 횟수를 제한하지 않고 직접 중단하려면 `--count`를 생략하고 `Ctrl+C`를 누릅니다.
 
 ```bash
-uv run observer watch --event-id BETS_EVENT_ID --interval 30
+uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
 ### 7. 저장된 최근 응답 비교
@@ -86,7 +92,7 @@ uv run observer watch --event-id BETS_EVENT_ID --interval 30
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
 ```bash
-uv run observer compare --event-id BETS_EVENT_ID
+uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
 ## 명령어
@@ -96,8 +102,13 @@ uv run observer compare --event-id BETS_EVENT_ID
 Event View API를 한 번 호출하고 원문 응답과 호출 메타데이터를 저장합니다.
 
 ```bash
-uv run observer collect --event-id BETS_EVENT_ID
+uv run observer collect --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
 ```
+
+- `--event-ids`, `-e`: 쉼표로 구분한 이벤트 ID입니다.
+- 각 ID의 앞뒤 공백은 제거합니다.
+- 중복 ID는 제거하고 문자열 기준으로 정렬합니다.
+- 빈 ID가 포함되거나 고유 ID가 10개를 초과하면 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
 
 ### `observer watch`
 
@@ -105,21 +116,24 @@ Event View API를 반복 호출하여 매 응답의 원문과 메타데이터를
 
 ```bash
 uv run observer watch \
-  --event-id BETS_EVENT_ID \
+  --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 \
   --interval 30 \
   --count 10
 ```
 
+- `--event-ids`, `-e`: `collect`와 동일한 형식의 이벤트 ID 목록입니다.
 - `--interval`, `-i`: 호출 간격(초). 기본값은 `30`이며 최소값은 `1`입니다.
 - `--count`, `-c`: 호출 횟수. 생략하면 `Ctrl+C`로 중단할 때까지 계속 수집합니다.
-- 첫 수집처럼 직전 응답이 없으면 구조 비교를 생략합니다.
+- 각 이벤트의 첫 수집처럼 직전 EventObservation이 없으면 해당 이벤트의 구조 비교를 생략합니다.
 - 구조 변화가 없으면 변화 기록 파일을 만들지 않습니다.
+- 원문 또는 CaptureMetadata 저장에 실패하면 오류를 출력하고 다음 API 수집을 계속합니다.
+- EventObservation 저장에 실패하면 오류를 출력하지만, 생성한 Observation으로 현재 호출의 비교는 계속 시도합니다.
 - 변화 기록 저장에 실패해도 오류를 출력하고 다음 API 수집을 계속합니다.
 - HTTP 오류 응답도 원문과 메타데이터는 저장하지만 구조 비교는 수행하지 않습니다.
 
 ### `observer compare`
 
-저장된 메타데이터에서 같은 경기의 최근 응답 두 개를 찾아 JSON 구조를 비교하고 결과를 출력합니다.
+저장된 EventObservation에서 같은 경기의 최근 응답 두 개를 찾아 이벤트 JSON 구조를 비교하고 결과를 출력합니다.
 
 ```bash
 uv run observer compare --event-id BETS_EVENT_ID
@@ -127,30 +141,51 @@ uv run observer compare --event-id BETS_EVENT_ID
 
 `compare`는 조회 전용 명령입니다. 변화가 발견되더라도 변화 기록 파일을 만들지 않습니다.
 
+## 다중 이벤트 처리 원칙
+
+- **Capture**는 Event View API 요청 한 번의 기록입니다. 요청 전체의 원문과 HTTP·분석 메타데이터를 한 번만 저장합니다.
+- **EventObservation**은 Capture 원문 안에서 특정 이벤트를 찾기 위한 참조입니다. 이벤트 응답 본문을 복제하지 않고 CaptureMetadata 경로와 `results` 배열 인덱스만 저장합니다.
+- `requested_event_ids`에는 정규화하여 실제 요청에 사용한 ID를 저장합니다.
+- `returned_event_ids`에는 응답에서 확인한 ID를 응답 순서와 중복을 포함해 그대로 저장합니다.
+- 요청하지 않은 이벤트가 고유한 ID와 함께 반환되면 이상 현상으로 기록하면서도 EventObservation을 만들고 분석에 포함합니다.
+- ID가 없거나 같은 ID가 응답 안에서 중복되면 원문의 특정 이벤트를 안전하게 가리킬 수 없으므로 EventObservation을 만들지 않습니다.
+
+응답 분석 중 발견할 수 있는 `response_issues` 코드는 다음과 같습니다.
+
+| 코드 | 의미 |
+|---|---|
+| `missing_event_id` | `results` 원소에 이벤트 ID가 없습니다. |
+| `missing_requested_event` | 요청한 이벤트가 응답에 없습니다. |
+| `unexpected_event_id` | 요청하지 않은 이벤트가 응답에 있습니다. |
+| `duplicate_event_id` | 같은 이벤트 ID가 응답에 두 번 이상 있습니다. |
+
+응답이 JSON이 아니거나 Event View 응답의 기본 구조를 분석할 수 없으면 `response_analysis_status`를 각각 `invalid_json`, `invalid_response_shape`로 기록합니다. 이때 `returned_event_ids`, `response_issues`는 빈 목록이며 EventObservation도 만들지 않습니다.
+
 ## 저장 구조
 
 모든 경로는 프로젝트 루트를 기준으로 합니다.
 
 ```text
 data/
-├── raw/event-view/YYYY-MM-DD/
-├── metadata/event-view/YYYY-MM-DD/
-└── changes/event-view/YYYY-MM-DD/
+├── raw/event-view/YYYY-MM-DD/{capture_file}
+├── metadata/event-view/YYYY-MM-DD/{capture_file}
+├── observations/event-view/{event_id}/{capture_file}
+└── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
 ```
 
 ### 원문 응답
 
 ```text
-data/raw/event-view/{captured_at의 UTC 날짜}/{captured_at}_event-{event_id}.json
+data/raw/event-view/{captured_at의 UTC 날짜}/{captured_at}_capture.json
 ```
 
 예시:
 
 ```text
-data/raw/event-view/2026-09-15/20260915T003206645274Z_event-12322442.json
+data/raw/event-view/2026-09-15/20260915T003206645274Z_capture.json
 ```
 
-API에서 받은 응답 바이트를 그대로 저장합니다.
+API에서 받은 응답 바이트를 변형하지 않고 그대로 저장합니다. 요청한 이벤트 ID나 실제 반환된 이벤트 ID는 파일명이 아니라 CaptureMetadata에서 확인합니다.
 
 ### 호출 메타데이터
 
@@ -162,23 +197,56 @@ data/metadata/event-view/{captured_at의 UTC 날짜}/{원문과 같은 파일명
 
 ```json
 {
+  "schema_version": 1,
+  "response_analysis_status": "completed",
   "captured_at": "2026-09-15T00:32:06.645274Z",
   "provider": "betsapi",
   "endpoint": "/v1/event/view",
   "http_method": "GET",
-  "event_ids": ["12322442"],
+  "requested_event_ids": ["12322442", "12322443"],
+  "returned_event_ids": ["12322442", "12322499"],
+  "response_issues": [
+    {
+      "code": "missing_requested_event",
+      "event_id": "12322443",
+      "result_indices": []
+    },
+    {
+      "code": "unexpected_event_id",
+      "event_id": "12322499",
+      "result_indices": [1]
+    }
+  ],
   "http_status_code": 200,
   "elapsed_ms": 182.47,
   "response_size_bytes": 15324,
   "content_type": "application/json",
-  "raw_file_path": "data/raw/event-view/2026-09-15/20260915T003206645274Z_event-12322442.json"
+  "raw_file_path": "data/raw/event-view/2026-09-15/20260915T003206645274Z_capture.json"
 }
 ```
+
+### EventObservation
+
+```text
+data/observations/event-view/{event_id}/{CaptureMetadata와 같은 파일명}
+```
+
+예시:
+
+```json
+{
+  "event_id": "12322442",
+  "capture_metadata_file_path": "data/metadata/event-view/2026-09-15/20260915T003206645274Z_capture.json",
+  "result_index": 0
+}
+```
+
+`result_index`는 Capture 원문의 `results` 배열에서 해당 이벤트가 위치한 0부터 시작하는 인덱스입니다. 구조 비교 시 EventObservation을 통해 CaptureMetadata와 원문을 따라가 해당 이벤트 객체만 추출합니다.
 
 ### 구조 변화 기록
 
 ```text
-data/changes/event-view/{current_captured_at의 UTC 날짜}/{현재 원문과 같은 파일명}
+data/changes/event-view/{event_id}/{current_captured_at의 UTC 날짜}/{현재 원문과 같은 파일명}
 ```
 
 예시:
@@ -189,13 +257,13 @@ data/changes/event-view/{current_captured_at의 UTC 날짜}/{현재 원문과 �
   "event_id": "12322442",
   "previous_captured_at": "2026-09-15T00:32:06.645274Z",
   "current_captured_at": "2026-09-15T00:32:17.088806Z",
-  "previous_raw_file_path": "data/raw/event-view/2026-09-15/20260915T003206645274Z_event-12322442.json",
-  "current_raw_file_path": "data/raw/event-view/2026-09-15/20260915T003217088806Z_event-12322442.json",
-  "added_paths": ["$.results[].scores"],
-  "removed_paths": ["$.results[].status"],
+  "previous_raw_file_path": "data/raw/event-view/2026-09-15/20260915T003206645274Z_capture.json",
+  "current_raw_file_path": "data/raw/event-view/2026-09-15/20260915T003217088806Z_capture.json",
+  "added_paths": ["$.scores"],
+  "removed_paths": ["$.status"],
   "type_changes": [
     {
-      "path": "$.results[].time",
+      "path": "$.time",
       "previous_types": ["string"],
       "current_types": ["integer"]
     }
@@ -203,11 +271,11 @@ data/changes/event-view/{current_captured_at의 UTC 날짜}/{현재 원문과 �
 }
 ```
 
-변화 기록은 현재 원문 파일과 일대일로 연결할 수 있도록 현재 원문과 같은 파일명을 사용합니다. 같은 경로의 변화 기록이 이미 존재하면 기존 파일을 덮어쓰지 않습니다.
+변화 기록은 이벤트별 디렉터리 아래에서 현재 원문과 같은 파일명을 사용합니다. 따라서 하나의 Capture에 포함된 여러 이벤트가 동시에 변해도 서로 다른 경로에 저장됩니다. 같은 경로의 변화 기록이 이미 존재하면 기존 파일을 덮어쓰지 않습니다.
 
 ## 구조 비교 기준
 
-JSON 루트는 `$`, 객체의 키는 `.key`, 배열의 원소는 `[]`로 표현합니다. 예를 들어 `results` 배열 원소의 `scores` 필드는 `$.results[].scores`입니다.
+구조 비교는 Capture 전체가 아니라 EventObservation이 가리키는 이벤트 객체 두 개를 대상으로 합니다. 비교 대상 이벤트 객체의 루트는 `$`, 객체의 키는 `.key`, 배열의 원소는 `[]`로 표현합니다. 예를 들어 이벤트 객체의 `scores` 필드는 `$.scores`입니다.
 
 다음 항목을 구조 변화로 판단합니다.
 

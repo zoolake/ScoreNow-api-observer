@@ -25,6 +25,7 @@ def _capture_with_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     response: httpx.Response,
+    requested_event_ids: list[str] | None = None,
     observation_save_errors: dict[str, OSError] | None = None,
 ) -> tuple[
     collector.CaptureResult,
@@ -35,6 +36,8 @@ def _capture_with_response(
     metadata_path = tmp_path / "metadata.json"
     saved_metadata: list[CaptureMetadata] = []
     saved_observations: list[EventObservation] = []
+    if requested_event_ids is None:
+        requested_event_ids = ["A"]
 
     monkeypatch.setattr(collector, "get_event_view", lambda **_kwargs: response)
     monkeypatch.setattr(
@@ -62,7 +65,7 @@ def _capture_with_response(
     result = collector.capture_event_view(
         base_url="https://example.test",
         token="test-token",
-        event_id="A",
+        requested_event_ids=requested_event_ids,
     )
 
     return result, saved_metadata, saved_observations
@@ -103,6 +106,28 @@ def test_capture_event_view_analyzes_json_response(
         ),
     ]
     assert result.event_observations == saved_observations
+
+
+def test_capture_event_view_handles_multiple_requested_event_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    response = _response(
+        content=b'{"success":1,"results":[{"id":"A"},{"id":"B"}]}',
+        content_type="application/json",
+    )
+
+    result, saved_metadata, saved_observations = _capture_with_response(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        response=response,
+        requested_event_ids=["A", "B"],
+    )
+
+    assert result.metadata.requested_event_ids == ["A", "B"]
+    assert result.metadata.returned_event_ids == ["A", "B"]
+    assert saved_metadata == [result.metadata]
+    assert saved_observations == result.event_observations
 
 
 def test_capture_event_view_saves_metadata_when_response_is_not_json(

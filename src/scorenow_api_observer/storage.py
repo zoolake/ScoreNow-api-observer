@@ -18,7 +18,6 @@ OBSERVATION_DIRECTORY = Path("data/observations/event-view")
 
 
 def save_raw_response(
-    event_id: str,
     response_body: bytes,
     captured_at: datetime,
     base_directory: Path = RAW_DATA_DIRECTORY,
@@ -27,7 +26,6 @@ def save_raw_response(
 
     date_directory = captured_at.strftime("%Y-%m-%d")
     timestamp = captured_at.strftime("%Y%m%dT%H%M%S%fZ")
-    safe_event_id = _to_safe_file_name(event_id)
 
     output_directory = base_directory / date_directory
     output_directory.mkdir(
@@ -35,7 +33,7 @@ def save_raw_response(
         exist_ok=True,  # 이미 존재해도 오류 발생 X
     )
 
-    output_path = output_directory / f"{timestamp}_event-{safe_event_id}.json"
+    output_path = output_directory / f"{timestamp}_capture.json"
     output_path.write_bytes(response_body)
 
     return output_path

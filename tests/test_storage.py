@@ -35,7 +35,6 @@ def test_save_raw_response_and_metadata(
 
     # when
     raw_path = save_raw_response(
-        event_id=event_id,
         response_body=response_body,
         captured_at=captured_at,
         base_directory=tmp_path / "raw",
@@ -60,7 +59,7 @@ def test_save_raw_response_and_metadata(
     metadata_path = save_capture_metadata(metadata, tmp_path / "metadata")
 
     # then
-    expected_file_name = "20260909T150000000000Z_event-1234567.json"
+    expected_file_name = "20260909T150000000000Z_capture.json"
 
     assert raw_path == (tmp_path / "raw" / "2026-09-09" / expected_file_name)
     assert metadata_path == (tmp_path / "metadata" / "2026-09-09" / expected_file_name)
@@ -271,10 +270,10 @@ def test_save_structure_change_record_uses_event_id_date_and_capture_file_name(
         previous_captured_at=datetime(2026, 9, 8, 14, 59, tzinfo=UTC),
         current_captured_at=datetime(2026, 9, 9, 15, 0, tzinfo=UTC),
         previous_raw_file_path=(
-            "data/raw/event-view/2026-09-08/20260908T145900000000Z_event-1234567.json"
+            "data/raw/event-view/2026-09-08/20260908T145900000000Z_capture.json"
         ),
         current_raw_file_path=(
-            "data/raw/event-view/2026-09-09/20260909T150000000000Z_event-1234567.json"
+            "data/raw/event-view/2026-09-09/20260909T150000000000Z_capture.json"
         ),
         added_paths=["$.results[].scores"],
         removed_paths=["$.results[].status"],
@@ -294,7 +293,7 @@ def test_save_structure_change_record_uses_event_id_date_and_capture_file_name(
         / "changes"
         / "1234567"
         / "2026-09-09"
-        / "20260909T150000000000Z_event-1234567.json"
+        / "20260909T150000000000Z_capture.json"
     )
     assert (
         StructureChangeRecord.model_validate_json(

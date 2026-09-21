@@ -45,21 +45,20 @@ def capture_event_view(
     *,
     base_url: str,
     token: str,
-    event_id: str,
+    requested_event_ids: list[str],
 ) -> CaptureResult:
     """Event View API 를 한 번 호출하고 응답과 메타데이터를 저장합니다."""
 
     response = get_event_view(
         base_url=base_url,
         token=token,
-        event_id=event_id,
+        requested_event_ids=requested_event_ids,
     )
 
     captured_at = datetime.now(UTC)
 
     # 응답 원본 저장
     raw_file_path = save_raw_response(
-        event_id=event_id,
         response_body=response.content,
         captured_at=captured_at,
     )
@@ -75,7 +74,7 @@ def capture_event_view(
     else:
         try:
             analysis = analyze_event_view_response(
-                requested_event_ids=[event_id],
+                requested_event_ids=requested_event_ids,
                 response_json=response_json,
             )
         except InvalidEventViewResponseShapeError:
@@ -95,7 +94,7 @@ def capture_event_view(
         provider="betsapi",
         endpoint=EVENT_VIEW_ENDPOINT,
         http_method="GET",
-        requested_event_ids=[event_id],
+        requested_event_ids=requested_event_ids,
         returned_event_ids=returned_event_ids,
         response_issues=response_issues,
         http_status_code=response.status_code,

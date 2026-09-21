@@ -6,7 +6,7 @@ EVENT_VIEW_ENDPOINT = "/v1/event/view"
 def get_event_view(
     base_url: str,
     token: str,
-    event_id: str,
+    requested_event_ids: list[str],
 ) -> httpx.Response:
     """BETS API에서 경기 상세 응답을 한 번 조회합니다."""
 
@@ -16,7 +16,7 @@ def get_event_view(
         url,
         params={
             "token": token,
-            "event_id": event_id,
+            "event_id": ",".join(requested_event_ids),
         },
         timeout=30.0,
     )

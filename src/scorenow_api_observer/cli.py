@@ -17,6 +17,10 @@ from scorenow_api_observer.comparison import (
 from scorenow_api_observer.event_observation import (
     InvalidEventObservationReferenceError,
 )
+from scorenow_api_observer.event_view_request import (
+    InvalidRequestedEventIdsError,
+    parse_requested_event_ids,
+)
 from scorenow_api_observer.models import EventObservation
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.storage import save_structure_change_record
@@ -43,26 +47,28 @@ def _print_capture_summary(result: CaptureResult) -> None:
 
 @app.command()
 def collect(
-    event_id: str = typer.Option(
+    event_ids: str = typer.Option(
         ...,
-        "--event-id",
+        "--event-ids",
         "-e",
-        help="수집할 외부 API 경기 ID",
+        help="쉼표로 구분한 수집 대상 외부 API 경기 ID",
     ),
 ) -> None:
     """BETS View API를 호출하고 응답을 저장합니다."""
 
+    requested_event_ids = _parse_requested_event_ids_or_exit(event_ids)
+
     # BaseSettings가 실행 시 .env 에서 필수 값을 읽어온다.
     settings = Settings()  # pyright: ignore[reportCallIssue]
 
-    typer.echo(f"수집 대상 경기 ID: {event_id}")
+    typer.echo(f"수집 대상 경기 ID: {event_ids}")
     typer.echo("BETS View API를 호출합니다.")
 
     try:
         result = capture_event_view(
             base_url=settings.bets_api_base_url,
             token=settings.bets_api_token.get_secret_value(),
-            event_id=event_id,
+            requested_event_ids=requested_event_ids,
         )
     except httpx.RequestError:
         typer.echo(
@@ -104,11 +110,11 @@ def collect(
 
 @app.command()
 def watch(
-    event_id: str = typer.Option(
+    event_ids: str = typer.Option(
         ...,
-        "--event-id",
+        "--event-ids",
         "-e",
-        help="수집할 외부 API 경기 ID",
+        help="쉼표로 구분한 수집 대상 외부 API 경기 ID",
     ),
     interval_seconds: int = typer.Option(
         30, "--interval", "-i", min=1, help="호출 간격(초)"
@@ -119,11 +125,13 @@ def watch(
 ) -> None:
     """Event View API를 반복 수집하고 응답 구조 변화를 비교·기록합니다."""
 
+    requested_event_ids = _parse_requested_event_ids_or_exit(event_ids)
+
     settings = Settings()  # pyright: ignore[reportCallIssue]
 
     count_description = str(count) if count is not None else "제한 없음"
 
-    typer.echo(f"수집 대상 경기 ID: {event_id}")
+    typer.echo(f"수집 대상 경기 ID: {event_ids}")
     typer.echo(f"호출 간격: {interval_seconds}초")
     typer.echo(f"호출 횟수: {count_description}")
     typer.echo("중단하려면 Ctrl+C를 누르세요.")
@@ -142,7 +150,7 @@ def watch(
                 result = capture_event_view(
                     base_url=settings.bets_api_base_url,
                     token=settings.bets_api_token.get_secret_value(),
-                    event_id=event_id,
+                    requested_event_ids=requested_event_ids,
                 )
             except httpx.RequestError:
                 typer.echo("API 서버에 연결하지 못했습니다.", err=True)
@@ -310,6 +318,19 @@ def _print_observation_save_failures(result: CaptureResult) -> None:
             f"실패 Event ID:{save_failure.event_id} / 사유: {save_failure.error_message}",
             err=True,
         )
+
+
+def _parse_requested_event_ids_or_exit(value: str) -> list[str]:
+    try:
+        requested_event_ids = parse_requested_event_ids(value)
+    except InvalidRequestedEventIdsError as error:
+        typer.echo(
+            f"이벤트 ID 입력이 올바르지 않습니다. {error}",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    return requested_event_ids
 
 
 if __name__ == "__main__":
