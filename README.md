@@ -4,6 +4,9 @@
 
 현재는 BETS API의 Event View 엔드포인트를 대상으로 합니다. API 토큰은 호출에만 사용하며 원문, 메타데이터, 변화 기록 파일에는 저장하지 않습니다.
 
+현재 구현 구조와 수집·비교·보고서 분석의 실제 함수 호출 흐름은
+[구조 문서](ARCHITECTURE.md)에서 확인할 수 있습니다.
+
 ## 요구 사항
 
 - Python 3.14 이상
@@ -95,6 +98,16 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
+### 8. 저장된 자료의 Markdown 보고서 생성
+
+```bash
+uv run observer report
+```
+
+이 명령은 API를 호출하지 않고 현재 저장된 CaptureMetadata와 EventObservation을 모두
+분석합니다. endpoint 전체 보고서와 등록된 각 종목의 보고서, 종목을 분류할 수 없는
+Observation 보고서를 같은 UTC 생성 시각으로 저장합니다.
+
 ## 명령어
 
 ### `observer collect`
@@ -141,6 +154,24 @@ uv run observer compare --event-id BETS_EVENT_ID
 
 `compare`는 조회 전용 명령입니다. 변화가 발견되더라도 변화 기록 파일을 만들지 않습니다.
 
+### `observer report`
+
+저장된 Event View 자료를 분석하여 Markdown 보고서를 생성합니다.
+
+```bash
+uv run observer report
+```
+
+- BETS API를 호출하거나 API 토큰을 읽지 않습니다.
+- endpoint 보고서에는 파일 처리 현황, 응답 분석 상태·이슈, 종목별 표본과 분석 실패
+  상세가 포함됩니다.
+- 종목별 보고서에는 Observation·고유 이벤트 수와 필드별 자료형·제공 현황이
+  포함됩니다.
+- 관측값이 없는 등록 종목과 `unclassified` 보고서도 생성합니다.
+- 일부 저장 파일을 읽거나 해석하지 못해도 나머지 자료를 분석하고, 실패 상세는
+  endpoint 보고서에 남깁니다.
+- 설정 로드, 렌더링 또는 보고서 저장에 실패하면 종료 코드 `1`로 끝납니다.
+
 ## 다중 이벤트 처리 원칙
 
 - **Capture**는 Event View API 요청 한 번의 기록입니다. 요청 전체의 원문과 HTTP·분석 메타데이터를 한 번만 저장합니다.
@@ -171,7 +202,17 @@ data/
 ├── metadata/event-view/YYYY-MM-DD/{capture_file}
 ├── observations/event-view/{event_id}/{capture_file}
 └── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+
+reports/
+└── event-view/YYYY-MM-DD/
+    ├── {generated_at}_endpoint.md
+    ├── {generated_at}_sport_{sport_code}.md
+    └── {generated_at}_sport_unclassified.md
 ```
+
+보고서 파일명에는 UTC 생성 시각이 `YYYYMMDDTHHMMSSffffffZ` 형식으로 들어갑니다.
+같은 실행에서 생성한 모든 파일은 동일한 시각 접두사를 사용합니다. 기존 보고서와 같은
+경로가 존재하면 덮어쓰지 않습니다.
 
 ### 원문 응답
 

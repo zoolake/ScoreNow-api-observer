@@ -1,9 +1,11 @@
 import json
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import typer
+from jinja2 import TemplateError
 from pydantic import ValidationError
 
 from scorenow_api_observer.collector import CaptureResult, capture_event_view
@@ -21,9 +23,23 @@ from scorenow_api_observer.event_view_request import (
     InvalidRequestedEventIdsError,
     parse_requested_event_ids,
 )
+from scorenow_api_observer.markdown_report import (
+    render_endpoint_report_markdown,
+    render_sport_report_markdown,
+)
 from scorenow_api_observer.models import EventObservation
+from scorenow_api_observer.report_analysis import analyze_event_view_report
+from scorenow_api_observer.report_storage import (
+    build_report_output_path,
+    save_report_text,
+)
 from scorenow_api_observer.settings import Settings
-from scorenow_api_observer.storage import save_structure_change_record
+from scorenow_api_observer.sport_config import load_sport_codes_by_id
+from scorenow_api_observer.storage import (
+    find_capture_metadata_paths,
+    find_event_observation_paths,
+    save_structure_change_record,
+)
 
 app = typer.Typer(
     name="observer",
@@ -222,6 +238,91 @@ def compare(
     typer.echo(f"직전 응답: {comparison.previous_capture.captured_at.isoformat()}")
     typer.echo(f"최신 응답: {comparison.current_capture.captured_at.isoformat()}")
     _print_structure_comparison(comparison.structure_comparison)
+
+
+@app.command()
+def report() -> None:
+    """저장된 Event View 자료를 분석하여 Markdown 보고서를 생성합니다."""
+
+    try:
+        sport_code_by_id = load_sport_codes_by_id()
+        analysis = analyze_event_view_report(
+            metadata_file_paths=find_capture_metadata_paths(),
+            observation_file_paths=find_event_observation_paths(),
+            sport_code_by_id=sport_code_by_id,
+        )
+        generated_at = datetime.now(UTC)
+
+        # 보고서 리스트 초기화 및 엔드포인트 보고서 추가
+        rendered_reports: list[tuple[str, str]] = [
+            (
+                "endpoint",
+                render_endpoint_report_markdown(
+                    analysis=analysis,
+                    generated_at=generated_at,
+                ),
+            )
+        ]
+
+        # 종목별 보고서 추가
+        for summary in analysis.sport_observation_summaries:
+            sport_code = summary.sport_code
+            sport_name = sport_code if sport_code is not None else "unclassified"
+            rendered_reports.append(
+                (
+                    f"sport_{sport_name}",
+                    render_sport_report_markdown(
+                        analysis=analysis,
+                        sport_code=sport_code,
+                        generated_at=generated_at,
+                    ),
+                )
+            )
+
+        output_paths = [
+            build_report_output_path(
+                generated_at=generated_at,
+                report_name=report_name,
+            )
+            for report_name, _ in rendered_reports
+        ]
+
+        # 중복 여부 검증
+        if len(output_paths) != len(set(output_paths)):
+            raise ValueError(
+                "보고서 이름을 안전한 파일명으로 변환한 결과가 중복됩니다."
+            )
+
+        # 기등록 여부 검증
+        existing_paths = [path for path in output_paths if path.exists()]
+        if existing_paths:
+            raise FileExistsError(f"보고서 파일이 이미 존재합니다: {existing_paths[0]}")
+
+        saved_reports: list[tuple[str, Path]] = []
+        for (report_name, content), output_path in zip(
+            rendered_reports,
+            output_paths,
+            strict=True,
+        ):
+            saved_path = save_report_text(content=content, output_path=output_path)
+            saved_reports.append((report_name, saved_path))
+    except (OSError, ValueError, TemplateError) as error:
+        typer.echo(f"보고서 생성에 실패했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    for report_name, saved_path in saved_reports:
+        typer.echo(f"{report_name} 보고서 저장 위치: {saved_path}")
+
+    metadata_failure_count = len(analysis.capture_metadata_load_failures)
+    observation_failure_count = len(analysis.observed_event_resolution_failures)
+    if metadata_failure_count or observation_failure_count:
+        typer.echo(
+            "일부 저장 파일을 분석하지 못했습니다. "
+            f"CaptureMetadata {metadata_failure_count}건, "
+            f"EventObservation {observation_failure_count}건. "
+            "자세한 내용은 endpoint 보고서를 확인하세요.",
+            err=True,
+        )
 
 
 def _print_structure_comparison(result: StructureComparison) -> None:

@@ -13,6 +13,8 @@ from scorenow_api_observer.models import (
     TypeChangeRecord,
 )
 from scorenow_api_observer.storage import (
+    find_capture_metadata_paths,
+    find_event_observation_paths,
     load_capture_metadata,
     load_event_observation,
     save_capture_metadata,
@@ -20,6 +22,62 @@ from scorenow_api_observer.storage import (
     save_raw_response,
     save_structure_change_record,
 )
+
+
+def test_find_capture_metadata_paths_returns_recursive_json_paths_in_order(
+    tmp_path: Path,
+) -> None:
+    metadata_directory = tmp_path / "metadata"
+    first_path = metadata_directory / "2026-09-21" / "capture-a.json"
+    second_path = metadata_directory / "2026-09-21" / "capture-b.json"
+    third_path = metadata_directory / "2026-09-22" / "capture-a.json"
+
+    for metadata_path in [third_path, second_path, first_path]:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text("{}", encoding="utf-8")
+
+    ignored_path = metadata_directory / "2026-09-21" / "notes.txt"
+    ignored_path.write_text("not metadata", encoding="utf-8")
+
+    result = find_capture_metadata_paths(metadata_directory)
+
+    assert result == [first_path, second_path, third_path]
+
+
+def test_find_capture_metadata_paths_returns_empty_list_for_missing_directory(
+    tmp_path: Path,
+) -> None:
+    result = find_capture_metadata_paths(tmp_path / "does-not-exist")
+
+    assert result == []
+
+
+def test_find_event_observation_paths_returns_recursive_json_paths_in_order(
+    tmp_path: Path,
+) -> None:
+    observation_directory = tmp_path / "observations"
+    first_path = observation_directory / "A" / "20260921_capture.json"
+    second_path = observation_directory / "A" / "20260922_capture.json"
+    third_path = observation_directory / "B" / "20260920_capture.json"
+
+    for observation_path in [third_path, second_path, first_path]:
+        observation_path.parent.mkdir(parents=True, exist_ok=True)
+        observation_path.write_text("{}", encoding="utf-8")
+
+    ignored_path = observation_directory / "A" / "notes.txt"
+    ignored_path.write_text("not an observation", encoding="utf-8")
+
+    result = find_event_observation_paths(observation_directory)
+
+    assert result == [first_path, second_path, third_path]
+
+
+def test_find_event_observation_paths_returns_empty_list_for_missing_directory(
+    tmp_path: Path,
+) -> None:
+    result = find_event_observation_paths(tmp_path / "does-not-exist")
+
+    assert result == []
 
 
 def test_save_raw_response_and_metadata(

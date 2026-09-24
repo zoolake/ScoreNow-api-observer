@@ -154,6 +154,24 @@ def load_event_observation(observation_path: Path) -> EventObservation:
     return EventObservation.model_validate(observation_json)
 
 
+def find_event_observation_paths(
+    base_directory: Path = OBSERVATION_DIRECTORY,
+) -> list[Path]:
+    """Observation 디렉터리 아래의 JSON 파일 경로를 정렬하여 반환합니다."""
+
+    observation_paths = base_directory.rglob("*.json")
+    return sorted(observation_paths)
+
+
+def find_capture_metadata_paths(
+    base_directory: Path = METADATA_DIRECTORY,
+) -> list[Path]:
+    """CaptureMetadata 디렉터리 아래의 JSON 파일 경로를 정렬하여 반환합니다."""
+
+    capture_metadata_paths = base_directory.rglob("*.json")
+    return sorted(capture_metadata_paths)
+
+
 def _to_safe_file_name(value: str) -> str:
     """문자열을 파일명에 안전하게 사용할 수 있도록 변환합니다."""
 

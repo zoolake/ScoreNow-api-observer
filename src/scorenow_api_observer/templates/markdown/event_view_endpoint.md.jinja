@@ -1,0 +1,58 @@
+# Event View Endpoint 보고서
+
+- 생성 시각: `{{ generated_at.isoformat() }}`
+
+## 파일 처리 개요
+
+| 처리 단계 | 입력 파일 수 | 처리 완료 | 처리 실패 |
+| --- | ---: | ---: | ---: |
+| CaptureMetadata 읽기 | {{ capture_metadata_input_count }} | {{ loaded_capture_metadata_count }} | {{ capture_metadata_load_failure_count }} |
+| EventObservation 해석 | {{ event_observation_input_count }} | {{ resolved_event_observation_count }} | {{ event_observation_resolution_failure_count }} |
+
+## 응답 분석 상태
+
+| 상태 | Capture 수 |
+| --- | ---: |
+{% for summary in analysis.response_analysis_status_summaries -%}
+| `{{ summary.status }}` | {{ summary.capture_count }} |
+{% endfor %}
+## 응답 이슈
+
+{% if analysis.response_issue_summaries -%}
+| 이슈 코드 | 총 발생 건수 | 영향을 받은 Capture 수 |
+| --- | ---: | ---: |
+{% for summary in analysis.response_issue_summaries -%}
+| `{{ summary.code }}` | {{ summary.occurrence_count }} | {{ summary.affected_capture_count }} |
+{% endfor -%}
+{% else -%}
+기록된 응답 이슈가 없습니다.
+{% endif %}
+## 종목별 Observation 현황
+
+| 종목 코드 | Observation 수 | 고유 이벤트 수 |
+| --- | ---: | ---: |
+{% for summary in analysis.sport_observation_summaries -%}
+| {% if summary.sport_code is none %}분류 불가{% else %}`{{ summary.sport_code }}`{% endif %} | {{ summary.observation_count }} | {{ summary.unique_event_count }} |
+{% endfor %}
+## CaptureMetadata 읽기 실패
+
+{% if analysis.capture_metadata_load_failures -%}
+| 파일 경로 | 오류 |
+| --- | --- |
+{% for failure in analysis.capture_metadata_load_failures -%}
+| {{ failure.metadata_file_path | markdown_table_cell }} | {{ failure.error_message | markdown_table_cell }} |
+{% endfor -%}
+{% else -%}
+읽기에 실패한 CaptureMetadata 파일이 없습니다.
+{% endif %}
+## EventObservation 해석 실패
+
+{% if analysis.observed_event_resolution_failures -%}
+| 파일 경로 | 오류 |
+| --- | --- |
+{% for failure in analysis.observed_event_resolution_failures -%}
+| {{ failure.observation_file_path | markdown_table_cell }} | {{ failure.error_message | markdown_table_cell }} |
+{% endfor -%}
+{% else -%}
+해석에 실패한 EventObservation 파일이 없습니다.
+{% endif -%}

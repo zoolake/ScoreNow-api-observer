@@ -20,6 +20,12 @@ from scorenow_api_observer.models import (
     EventObservation,
     StructureChangeRecord,
 )
+from scorenow_api_observer.report_analysis import (
+    CaptureMetadataLoadFailure,
+    EventViewReportAnalysis,
+    ObservedEventResolutionFailure,
+    SportObservationSummary,
+)
 
 
 class _FakeSettings:
@@ -526,3 +532,182 @@ def test_watch_continues_after_structure_change_record_save_fails(
     assert capture_count == 2
     assert sleep_calls == [7]
     assert "응답 구조 변화 저장에 실패하였습니다." in result.output
+
+
+def test_report_creates_endpoint_and_all_sport_reports_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_at = datetime(2026, 9, 24, 12, 30, tzinfo=UTC)
+    metadata_paths = [Path("data/metadata/first.json")]
+    observation_paths = [Path("data/observations/first.json")]
+    sport_code_by_id = {"1": "football", "16": "baseball"}
+    analysis = EventViewReportAnalysis(
+        response_analysis_status_summaries=[],
+        response_issue_summaries=[],
+        sport_observation_summaries=[
+            SportObservationSummary("baseball", 2, 1),
+            SportObservationSummary("football", 0, 0),
+            SportObservationSummary(None, 1, 1),
+        ],
+        capture_metadata_load_failures=[
+            CaptureMetadataLoadFailure(
+                metadata_file_path=Path("data/metadata/broken.json"),
+                error_message="invalid metadata",
+            )
+        ],
+        observed_event_resolution_failures=[
+            ObservedEventResolutionFailure(
+                observation_file_path=Path("data/observations/broken.json"),
+                error_message="invalid observation",
+            )
+        ],
+        sport_field_summaries=[],
+    )
+    analyzed_arguments: list[tuple[list[Path], list[Path], dict[str, str]]] = []
+    rendered_sports: list[tuple[str | None, datetime]] = []
+    built_report_names: list[str] = []
+    saved_reports: list[tuple[str, Path]] = []
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz: object) -> datetime:
+            assert tz is UTC
+            return generated_at
+
+    def analyze_report(
+        *,
+        metadata_file_paths: list[Path],
+        observation_file_paths: list[Path],
+        sport_code_by_id: dict[str, str],
+    ) -> EventViewReportAnalysis:
+        analyzed_arguments.append(
+            (metadata_file_paths, observation_file_paths, sport_code_by_id)
+        )
+        return analysis
+
+    def render_sport_report(
+        *,
+        analysis: EventViewReportAnalysis,
+        sport_code: str | None,
+        generated_at: datetime,
+    ) -> str:
+        assert analysis is not None
+        rendered_sports.append((sport_code, generated_at))
+        return f"sport report: {sport_code}\n"
+
+    def build_output_path(*, generated_at: datetime, report_name: str) -> Path:
+        assert generated_at == datetime(2026, 9, 24, 12, 30, tzinfo=UTC)
+        built_report_names.append(report_name)
+        return Path("reports") / f"{report_name}.md"
+
+    def save_report(*, content: str, output_path: Path) -> Path:
+        saved_reports.append((content, output_path))
+        return output_path
+
+    monkeypatch.setattr(cli, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: pytest.fail("report 명령은 API 설정을 읽으면 안 됩니다."),
+    )
+    monkeypatch.setattr(cli, "find_capture_metadata_paths", lambda: metadata_paths)
+    monkeypatch.setattr(cli, "find_event_observation_paths", lambda: observation_paths)
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", lambda: sport_code_by_id)
+    monkeypatch.setattr(cli, "analyze_event_view_report", analyze_report)
+    monkeypatch.setattr(
+        cli,
+        "render_endpoint_report_markdown",
+        lambda **_kwargs: "endpoint report\n",
+    )
+    monkeypatch.setattr(cli, "render_sport_report_markdown", render_sport_report)
+    monkeypatch.setattr(cli, "build_report_output_path", build_output_path)
+    monkeypatch.setattr(cli, "save_report_text", save_report)
+
+    result = CliRunner().invoke(cli.app, ["report"])
+
+    assert result.exit_code == 0
+    assert analyzed_arguments == [(metadata_paths, observation_paths, sport_code_by_id)]
+    assert rendered_sports == [
+        ("baseball", generated_at),
+        ("football", generated_at),
+        (None, generated_at),
+    ]
+    assert built_report_names == [
+        "endpoint",
+        "sport_baseball",
+        "sport_football",
+        "sport_unclassified",
+    ]
+    assert [path for _, path in saved_reports] == [
+        Path("reports/endpoint.md"),
+        Path("reports/sport_baseball.md"),
+        Path("reports/sport_football.md"),
+        Path("reports/sport_unclassified.md"),
+    ]
+    assert "endpoint 보고서 저장 위치: reports/endpoint.md" in result.output
+    assert "sport_unclassified 보고서 저장 위치" in result.output
+    assert "일부 저장 파일을 분석하지 못했습니다." in result.output
+    assert "CaptureMetadata 1건, EventObservation 1건" in result.output
+
+
+def test_report_rejects_safe_file_name_collision_before_saving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analysis = EventViewReportAnalysis(
+        response_analysis_status_summaries=[],
+        response_issue_summaries=[],
+        sport_observation_summaries=[
+            SportObservationSummary("unclassified", 0, 0),
+            SportObservationSummary(None, 0, 0),
+        ],
+        capture_metadata_load_failures=[],
+        observed_event_resolution_failures=[],
+        sport_field_summaries=[],
+    )
+    save_called = False
+
+    def save_report(**_kwargs: object) -> Path:
+        nonlocal save_called
+        save_called = True
+        return Path("unused")
+
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", dict)
+    monkeypatch.setattr(cli, "find_capture_metadata_paths", list)
+    monkeypatch.setattr(cli, "find_event_observation_paths", list)
+    monkeypatch.setattr(cli, "analyze_event_view_report", lambda **_kwargs: analysis)
+    monkeypatch.setattr(
+        cli,
+        "render_endpoint_report_markdown",
+        lambda **_kwargs: "endpoint\n",
+    )
+    monkeypatch.setattr(
+        cli,
+        "render_sport_report_markdown",
+        lambda **_kwargs: "sport\n",
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_report_output_path",
+        lambda *, generated_at, report_name: Path(f"reports/{report_name}.md"),
+    )
+    monkeypatch.setattr(cli, "save_report_text", save_report)
+
+    result = CliRunner().invoke(cli.app, ["report"])
+
+    assert result.exit_code == 1
+    assert not save_called
+    assert "안전한 파일명으로 변환한 결과가 중복됩니다." in result.output
+
+
+def test_report_exits_when_sport_config_cannot_be_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_load_sport_config() -> dict[str, str]:
+        raise OSError("config missing")
+
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", fail_to_load_sport_config)
+
+    result = CliRunner().invoke(cli.app, ["report"])
+
+    assert result.exit_code == 1
+    assert "보고서 생성에 실패했습니다. config missing" in result.output

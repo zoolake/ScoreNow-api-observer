@@ -1,0 +1,25 @@
+# Event View 종목 보고서
+
+- 종목: {% if sport_code is none %}분류 불가{% else %}`{{ sport_code }}`{% endif %}
+- 생성 시각: `{{ generated_at.isoformat() }}`
+
+## 표본 개요
+
+| Observation 수 | 고유 이벤트 수 |
+| ---: | ---: |
+| {{ sport_observation_summary.observation_count }} | {{ sport_observation_summary.unique_event_count }} |
+
+## 필드 제공 현황
+
+필드 존재 횟수는 Observation 기준이며, 항상·일부·미제공은 고유 이벤트 기준입니다.
+값이 `null`이어도 해당 필드는 존재한 것으로 집계합니다.
+
+{% if sport_field_summaries -%}
+| 필드 경로 | 관측 자료형 | 존재 Observation 수 | 항상 제공 이벤트 수 | 일부 제공 이벤트 수 | 미제공 이벤트 수 |
+| --- | --- | ---: | ---: | ---: | ---: |
+{% for summary in sport_field_summaries -%}
+| {{ summary.path | markdown_table_cell }} | {{ summary.observed_types | sort | join(", ") | markdown_table_cell }} | {{ summary.present_observation_count }} | {{ summary.always_present_event_count }} | {{ summary.sometimes_present_event_count }} | {{ summary.never_present_event_count }} |
+{% endfor -%}
+{% else -%}
+관측된 필드가 없습니다.
+{% endif -%}
