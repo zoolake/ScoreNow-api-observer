@@ -27,4 +27,7 @@ data/raw/*
 data/observations/*
 !data/observations/.gitkeep
 
+data/exceptions/*
+!data/exceptions/.gitkeep
+
 .DS_Store
