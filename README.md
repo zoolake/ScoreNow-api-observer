@@ -2,7 +2,9 @@
 
 문서가 충분하지 않은 외부 스포츠 API의 응답을 반복 수집하고, 경기·리그·수집 시점에 따라 JSON 응답 구조가 어떻게 달라지는지 관찰하기 위한 Python CLI 프로젝트입니다.
 
-현재는 BETS API의 Event View 엔드포인트를 대상으로 합니다. API 토큰은 호출에만 사용하며 원문, 메타데이터, 변화 기록 파일에는 저장하지 않습니다.
+현재는 BETS API의 Upcoming 엔드포인트로 설정된 종목·리그의 예정 경기를 탐색하고,
+Event View 엔드포인트로 선택한 경기를 수집·비교·분석할 수 있습니다. API 토큰은
+호출에만 사용하며 원문, 메타데이터, 변화 기록 파일에는 저장하지 않습니다.
 
 현재 구현 구조와 수집·비교·보고서 분석의 실제 함수 호출 흐름은
 [구조 문서](ARCHITECTURE.md)에서 확인할 수 있습니다.
@@ -44,15 +46,41 @@ BETS_API_TOKEN=your-token
 
 실제 토큰이 들어 있는 `.env`는 Git에 포함하지 않습니다.
 
-### 4. 관찰할 `event_id` 확인
+### 4. Upcoming 조회 대상 확인
 
-이 프로젝트는 아직 Upcoming API 호출 기능을 제공하지 않습니다. 먼저 BETS API의 Upcoming API를 별도로 호출하여 예정 경기 목록을 받은 뒤, 관찰하려는 경기의 `event_id`를 확인해야 합니다.
+[`config/betsapi_upcoming_targets.yaml`](config/betsapi_upcoming_targets.yaml)에
+Upcoming API로 조회할 종목과 리그가 등록되어 있습니다.
 
-ScoreNow 개발 환경에서는 ScoreNow DB에 저장된 경기의 BETS `event_id`를 사용할 수도 있습니다. 외부 사용자는 BETS API 응답에서 직접 확인해야 합니다.
+```yaml
+targets:
+  - sport_id: "16"
+    leagues:
+      - league_id: "349"
+        label: kbo
+      - league_id: "225"
+        label: mlb
+```
 
-한 번의 Event View 요청에는 이벤트 ID를 최대 10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`, `BETS_EVENT_ID_2`는 실제로 확인한 값으로 교체합니다.
+`sport_id`는 [`config/betsapi_sports.yaml`](config/betsapi_sports.yaml)에 등록된
+값이어야 합니다. `label`은 파일명에도 사용되므로 설정 전체에서 고유한 영문 소문자,
+숫자, 하이픈 조합이어야 합니다.
 
-### 5. 첫 응답 수집
+### 5. 예정 경기 탐색
+
+다음 명령은 설정에 등록된 모든 종목·리그를 UTC 기준 2026년 10월 16일로 조회합니다.
+BETS API의 `day` 파라미터가 UTC 날짜이므로 한국에서 10월 17일 오전에 시작하는
+경기가 UTC로는 10월 16일 경기일 수 있습니다.
+
+```bash
+uv run observer discover-upcoming --target-date 2026-10-16
+```
+
+생성된 Discovery JSON의 `events`에서 `event_id`, UTC·KST 예정 시각, 리그와 대진을
+확인한 뒤 관찰할 경기를 선택합니다. 한 번의 Event View 요청에는 이벤트 ID를 최대
+10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`, `BETS_EVENT_ID_2`는
+실제로 확인한 값으로 교체합니다.
+
+### 6. 첫 응답 수집
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1
@@ -71,7 +99,7 @@ data/raw/event-view/YYYY-MM-DD/...
 data/metadata/event-view/YYYY-MM-DD/...
 ```
 
-### 6. 반복 수집 및 구조 변화 관찰
+### 7. 반복 수집 및 구조 변화 관찰
 
 다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
@@ -90,7 +118,7 @@ uv run observer watch \
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
-### 7. 저장된 최근 응답 비교
+### 8. 저장된 최근 응답 비교
 
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
@@ -98,7 +126,7 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
-### 8. 저장된 자료의 Markdown 보고서 생성
+### 9. 저장된 자료의 Markdown 보고서 생성
 
 ```bash
 uv run observer report
@@ -109,6 +137,27 @@ uv run observer report
 Observation 보고서를 같은 UTC 생성 시각으로 저장합니다.
 
 ## 명령어
+
+### `observer discover-upcoming`
+
+설정된 종목·리그를 대상으로 Upcoming API를 한 번씩 호출하고, 원문·메타데이터와
+통합 Discovery JSON을 저장합니다.
+
+```bash
+uv run observer discover-upcoming --target-date 2026-10-16
+```
+
+- `--target-date`: BETS API에 전달할 UTC 기준 날짜이며 `YYYY-MM-DD` 형식입니다.
+- 조회 대상 하나의 실패가 다른 종목·리그의 호출을 막지 않습니다.
+- 인증·결제·권한·호출 제한 오류(HTTP 401, 402, 403, 429)가 반환되면 불필요한
+  후속 호출을 중단하고 조회하지 않은 대상을 실패 내역에 남깁니다.
+- 전체 성공은 `completed`, 일부 실패나 응답 이슈는 `partial`, 모든 대상 실패는
+  `failed`로 저장합니다.
+- `partial`은 경고를 출력하지만 활용 가능한 결과를 보존하고 종료 코드 `0`으로
+  끝납니다. `failed`는 Discovery를 저장한 뒤 종료 코드 `1`로 끝납니다.
+- 설정 또는 날짜 입력 오류는 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
+- 페이징 호출은 수행하지 않습니다. 응답의 `pager.total`이 현재 `results` 개수보다
+  크면 `pagination_required` 이슈와 `partial` 상태로 기록합니다.
 
 ### `observer collect`
 
@@ -199,9 +248,12 @@ uv run observer report
 ```text
 data/
 ├── raw/event-view/YYYY-MM-DD/{capture_file}
+├── raw/events-upcoming/{KST 호출 날짜}/{league_label}_{KST 시각}_KST_capture.json
 ├── metadata/event-view/YYYY-MM-DD/{capture_file}
+├── metadata/events-upcoming/{KST 호출 날짜}/{raw와 같은 파일명}
 ├── observations/event-view/{event_id}/{capture_file}
-└── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+└── discoveries/events-upcoming/{UTC target_date}/{KST run_id}_discovery.json
 
 reports/
 └── event-view/YYYY-MM-DD/
@@ -213,6 +265,57 @@ reports/
 보고서 파일명에는 UTC 생성 시각이 `YYYYMMDDTHHMMSSffffffZ` 형식으로 들어갑니다.
 같은 실행에서 생성한 모든 파일은 동일한 시각 접두사를 사용합니다. 기존 보고서와 같은
 경로가 존재하면 덮어쓰지 않습니다.
+
+### Upcoming 원문·메타데이터·Discovery
+
+Upcoming 원문과 메타데이터는 사람이 호출 시점을 쉽게 찾을 수 있도록 KST 날짜
+디렉터리와 KST 파일명을 사용합니다. 파일명에는 소수점 이하 초를 넣지 않으며 `:` 대신
+`-`를 사용합니다.
+
+```text
+data/raw/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15_KST_capture.json
+data/metadata/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15_KST_capture.json
+```
+
+JSON 안에서 수집 순서를 판별하는 `captured_at`, `started_at`, `completed_at`은 UTC로
+저장합니다. 각 경기의 BETS Unix 시작 시각은 두 시간대로 변환합니다.
+
+```json
+{
+  "event_id": "12345678",
+  "sport_id": "16",
+  "sport_code": "baseball",
+  "time_status": "0",
+  "scheduled_at_utc": "2026-10-16T23:00:00Z",
+  "scheduled_at_kst": "2026-10-17T08:00:00+09:00",
+  "league": {"id": "225", "name": "MLB", "country_code": "us"},
+  "home": {"id": "1", "name": "Home Team"},
+  "away": {"id": "2", "name": "Away Team"},
+  "source_capture_metadata_file_path": "data/metadata/events-upcoming/...",
+  "result_index": 0
+}
+```
+
+Discovery의 `target_date`는 KST 경기 날짜가 아니라 API에 전달한 UTC 날짜입니다.
+`events`는 이벤트 ID로 중복을 제거한 뒤 `scheduled_at_utc`, `event_id` 순으로
+정렬합니다. 각 항목은 원문을 복제하지 않고 CaptureMetadata 경로와 0부터 시작하는
+`result_index`로 출처를 가리킵니다.
+
+Upcoming CaptureMetadata의 `returned_event_ids`는 응답 순서와 중복을 보존합니다.
+다음 이슈는 계산 가능한 범위에서 메타데이터에 함께 기록합니다.
+
+| 코드 | 의미 |
+|---|---|
+| `invalid_event_shape` | `results` 원소가 JSON 객체가 아닙니다. |
+| `missing_event_id` | 이벤트 ID가 없거나 문자열이 아닙니다. |
+| `duplicate_event_id` | 같은 이벤트 ID가 한 응답에 중복되어 있습니다. |
+| `unexpected_sport_id` | 요청한 종목과 반환 이벤트의 종목이 다릅니다. |
+| `unexpected_league_id` | 요청한 리그와 반환 이벤트의 리그가 다릅니다. |
+| `invalid_scheduled_time` | Unix 시작 시각을 안전하게 변환할 수 없습니다. |
+| `pagination_required` | 현재 응답에 전체 결과가 모두 포함되지 않았습니다. |
+
+중복 ID, 예상 밖 종목·리그, 유효하지 않은 시작 시각의 이벤트는 원문과 이슈에는
+남기지만 통합 Discovery의 `events`에서는 제외합니다.
 
 ### 원문 응답
 

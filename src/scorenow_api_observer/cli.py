@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -40,6 +40,8 @@ from scorenow_api_observer.storage import (
     find_event_observation_paths,
     save_structure_change_record,
 )
+from scorenow_api_observer.upcoming_discovery import discover_upcoming_events
+from scorenow_api_observer.upcoming_targets import load_upcoming_targets
 
 app = typer.Typer(
     name="observer",
@@ -200,6 +202,69 @@ def watch(
     typer.echo(
         f"✅ {attempt_count} 회 수집 완료했습니다. 호출: {attempt_count}회 / 저장: {saved_count}개"
     )
+
+
+@app.command("discover-upcoming")
+def discover_upcoming(
+    target_date_value: str = typer.Option(
+        ...,
+        "--target-date",
+        help="BETS Upcoming API에 전달할 UTC 기준 날짜(YYYY-MM-DD)",
+    ),
+) -> None:
+    """설정된 종목·리그의 예정 경기를 조회하여 Discovery JSON을 생성합니다."""
+
+    target_date = _parse_target_date_or_exit(target_date_value)
+
+    try:
+        targets = load_upcoming_targets()
+    except (OSError, ValueError) as error:
+        typer.echo(f"Upcoming 조회 대상 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        settings = Settings()  # pyright: ignore[reportCallIssue]
+    except ValidationError as error:
+        typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    typer.echo(f"UTC 기준 조회 날짜: {target_date.isoformat()}")
+    typer.echo(f"조회 대상 종목·리그: {len(targets)}개")
+    typer.echo("BETS Upcoming API를 호출합니다.")
+
+    try:
+        result = discover_upcoming_events(
+            base_url=settings.bets_api_base_url,
+            token=settings.bets_api_token.get_secret_value(),
+            target_date=target_date,
+            targets=targets,
+        )
+    except (OSError, ValueError, ValidationError) as error:
+        typer.echo(f"Upcoming Discovery 저장에 실패했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    discovery = result.discovery
+    typer.echo(f"Discovery 상태: {discovery.status}")
+    typer.echo(f"Capture 저장: {len(result.captures)}개")
+    typer.echo(f"예정 경기: {len(discovery.events)}개")
+    typer.echo(f"처리 실패: {len(discovery.failures)}개")
+    typer.echo(f"Discovery 저장 위치: {result.discovery_file_path}")
+
+    for failure in discovery.failures:
+        typer.echo(
+            f"[{failure.league_label}] {failure.error_type}: {failure.error_message}",
+            err=True,
+        )
+
+    if discovery.status == "partial":
+        typer.echo(
+            "일부 조회 또는 응답 분석에 이상이 있습니다. "
+            "저장된 Discovery와 CaptureMetadata를 확인하세요.",
+            err=True,
+        )
+    elif discovery.status == "failed":
+        typer.echo("예정 경기 조회에 모두 실패했습니다.", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -432,6 +497,20 @@ def _parse_requested_event_ids_or_exit(value: str) -> list[str]:
         raise typer.Exit(code=2) from None
 
     return requested_event_ids
+
+
+def _parse_target_date_or_exit(value: str) -> date:
+    try:
+        parsed_date = date.fromisoformat(value)
+        if parsed_date.isoformat() != value:
+            raise ValueError
+        return parsed_date
+    except ValueError:
+        typer.echo(
+            "조회 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력하세요.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
 
 
 if __name__ == "__main__":

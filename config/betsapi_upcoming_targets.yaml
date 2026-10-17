@@ -1,0 +1,90 @@
+targets:
+  - sport_id: "1"
+    leagues:
+      - league_id: "8914"
+        label: k-league-2
+      - league_id: "221"
+        label: la-liga-2
+      - league_id: "33207"
+        label: fifa-world-cup-2026
+      - league_id: "849"
+        label: china-super-league
+      - league_id: "8910"
+        label: k-league-1
+      - league_id: "2279"
+        label: south-korea-cup
+      - league_id: "155"
+        label: brazil-serie-a
+      - league_id: "242"
+        label: usa-mls
+      - league_id: "445"
+        label: copa-sudamericana
+      - league_id: "1259"
+        label: england-efl-cup
+      - league_id: "26549"
+        label: argentina-liga-profesional
+      - league_id: "172"
+        label: portugal-primeira-liga
+      - league_id: "66"
+        label: netherlands-eredivisie
+      - league_id: "895"
+        label: japan-j-league
+      - league_id: "72"
+        label: germany-bundesliga-2
+      - league_id: "2916"
+        label: coppa-italia
+      - league_id: "410"
+        label: japan-j2-league
+      - league_id: "876"
+        label: france-ligue-2
+      - league_id: "3514"
+        label: copa-libertadores
+      - league_id: "38266"
+        label: afc-champions-league-two
+      - league_id: "6388"
+        label: uefa-super-cup
+      - league_id: "34172"
+        label: saudi-arabia-pro-league
+      - league_id: "880"
+        label: england-championship
+      - league_id: "33656"
+        label: japan-fa-cup
+      - league_id: "190"
+        label: italy-serie-b
+      - league_id: "99"
+        label: france-ligue-1
+      - league_id: "94"
+        label: england-premier-league
+      - league_id: "2266"
+        label: germany-dfb-pokal
+      - league_id: "199"
+        label: italy-serie-a
+      - league_id: "123"
+        label: germany-bundesliga-1
+      - league_id: "409"
+        label: japan-j-league-cup
+      - league_id: "1245"
+        label: netherlands-cup
+      - league_id: "2481"
+        label: england-fa-cup
+      - league_id: "1040"
+        label: uefa-champions-league
+      - league_id: "34732"
+        label: asian-games-women
+      - league_id: "28913"
+        label: asian-games
+
+  - sport_id: "16"
+    leagues:
+      - league_id: "349"
+        label: kbo
+      - league_id: "225"
+        label: mlb
+      - league_id: "347"
+        label: npb
+      - league_id: "1256"
+        label: cuba-serie-nacional
+      - league_id: "22713"
+        label: nicaragua-cnbs
+      - league_id: "38891"
+        label: wbsc-premier-12

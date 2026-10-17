@@ -3,7 +3,8 @@
 이 문서는 현재 구현된 기능을 실제 함수 호출 순서와 저장 데이터의 관계를 중심으로
 설명합니다. 함수 이름은 코드에서 그대로 검색할 수 있도록 작성합니다.
 
-현재 관찰 대상은 BETS API의 Event View 엔드포인트입니다. 보고서 분석은
+현재 Upcoming 엔드포인트로 관찰할 경기를 탐색하고 Event View 엔드포인트를
+수집·비교합니다. 보고서 분석은
 `EventViewReportAnalysis`, endpoint 전체·종목별 Markdown 렌더러와 `report` CLI가
 구현되어 있습니다. HTML 렌더러는 아직 구현되지 않았습니다.
 
@@ -11,10 +12,11 @@
 
 ```text
 CLI
-├── collect ── Event View API 호출 및 Capture 저장
-├── watch   ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
-├── compare ── 저장된 특정 이벤트의 최근 응답 2개 비교
-└── report  ── 저장된 전체 자료 분석 + endpoint·종목별 Markdown 보고서 저장
+├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
+├── collect           ── Event View API 호출 및 Capture 저장
+├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
+├── compare           ── 저장된 특정 이벤트의 최근 응답 2개 비교
+└── report            ── 저장된 전체 자료 분석 + endpoint·종목별 Markdown 보고서 저장
 
 보고서 분석 라이브러리
 └── 저장 파일 탐색 → 부분 성공 로드 → 이벤트 해석 → 보고서용 집계
@@ -23,6 +25,42 @@ CLI
 `collect`와 `watch`는 하나의 공통 수집 함수인 `capture_event_view()`를 사용합니다.
 `compare`와 `watch`의 구조 비교는 `compare_observations()`로 합쳐집니다. `report`는
 저장된 자료만 사용하는 오프라인 명령이며 API 설정을 읽지 않습니다.
+
+## `discover-upcoming` 호출 트리
+
+```text
+cli.discover_upcoming(target_date_value)
+├── cli._parse_target_date_or_exit(...)
+├── upcoming_targets.load_upcoming_targets(...)
+│   ├── config/betsapi_upcoming_targets.yaml 로드·검증
+│   ├── sport_config.load_sport_codes_by_id(...)
+│   └── 호출 단위 UpcomingTarget 목록 생성
+├── settings.Settings()
+└── upcoming_discovery.discover_upcoming_events(...)
+    ├── 설정된 UpcomingTarget마다
+    │   └── upcoming_discovery.capture_upcoming_target(...)
+    │       ├── bets_api_client.get_upcoming_events(...)
+    │       │   └── GET /v3/events/upcoming?sport_id=...&league_id=...&day=...
+    │       ├── upcoming_storage.save_upcoming_raw_response(...)
+    │       ├── upcoming_response.analyze_upcoming_response(...)
+    │       │   ├── returned_event_ids와 response_issues 계산
+    │       │   ├── 페이징 필요 여부 확인
+    │       │   └── Discovery에 포함 가능한 이벤트 추출
+    │       ├── upcoming_models.UpcomingCaptureMetadata(...)
+    │       └── upcoming_storage.save_upcoming_capture_metadata(...)
+    ├── 이벤트 ID 중복 제거 및 예정 시각·ID 정렬
+    ├── upcoming_models.UpcomingDiscovery(...)
+    └── upcoming_storage.save_upcoming_discovery(...)
+```
+
+일반적인 연결·응답·저장 실패는 해당 조회 대상의 실패로 남기고 다음 대상을 계속
+처리합니다. HTTP 401, 402, 403, 429는 남은 유료 호출을 중단하며, 조회하지 않은 대상도
+`SkippedTargetError`로 Discovery에 기록합니다. 일부 성공은 `partial`이지만 CLI 종료
+코드는 `0`이고, 모든 대상 실패만 종료 코드 `1`입니다.
+
+Upcoming 원문과 CaptureMetadata는 KST 호출 날짜·파일명을 사용하고, JSON 안의
+`captured_at`은 UTC를 유지합니다. 통합 Discovery는 API에 전달한 UTC `target_date`별로
+저장하며 경기 예정 시각은 UTC와 KST를 모두 제공합니다.
 
 ## `collect` 호출 트리
 
@@ -207,7 +245,10 @@ data/
 ├── raw/event-view/YYYY-MM-DD/{capture_file}
 ├── metadata/event-view/YYYY-MM-DD/{capture_file}
 ├── observations/event-view/{event_id}/{capture_file}
-└── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+├── raw/events-upcoming/{KST 호출 날짜}/{capture_file}
+├── metadata/events-upcoming/{KST 호출 날짜}/{capture_file}
+└── discoveries/events-upcoming/{UTC target_date}/{discovery_file}
 ```
 
 ## 주요 모델
@@ -219,14 +260,21 @@ data/
 | `StructureChangeRecord` | 같은 이벤트의 두 시점 사이에서 발견한 구조 변화 | 포함하지 않음 |
 | `ObservedEvent` | 보고서 분석 중 원문에서 해석한 이벤트와 출처 | 메모리에서만 포함 |
 | `EventViewReportAnalysis` | 보고서 렌더링에 사용할 집계 결과 | 원문 대신 요약 포함 |
+| `UpcomingCaptureMetadata` | Upcoming 호출 한 번의 조건·응답·이슈 | 포함하지 않음 |
+| `UpcomingDiscovery` | 한 실행에서 찾은 예정 경기와 실패 내역 | 이벤트 요약만 포함 |
 
 ## 주요 모듈과 함수
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `collect`, `watch`, `compare`, `report` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `collect`, `watch`, `compare`, `report` | 명령 조합과 사용자 출력 |
 | `event_view_request.py` | `parse_requested_event_ids` | 쉼표 입력 정규화와 최대 10개 검증 |
-| `bets_api_client.py` | `get_event_view` | BETS Event View HTTP 호출 |
+| `bets_api_client.py` | `get_event_view`, `get_upcoming_events` | BETS API HTTP 호출 |
+| `upcoming_targets.py` | `load_upcoming_targets` | Upcoming 조회 대상 설정 로드·검증 |
+| `upcoming_response.py` | `analyze_upcoming_response` | Upcoming 이벤트·이슈·페이징 분석 |
+| `upcoming_discovery.py` | `discover_upcoming_events`, `capture_upcoming_target` | 대상별 부분 실패 수집과 통합 Discovery 생성 |
+| `upcoming_storage.py` | `save_upcoming_*` | Upcoming 원문·메타데이터·Discovery 저장 |
+| `upcoming_models.py` | `UpcomingCaptureMetadata`, `UpcomingDiscovery` 등 | Upcoming 영속 데이터 모델 |
 | `collector.py` | `capture_event_view`, `CaptureResult` | 원문·Metadata·Observation 생성 및 저장 |
 | `event_view_response.py` | `analyze_event_view_response` | 반환 ID, 이슈, 관측 가능 이벤트 분석 |
 | `models.py` | `CaptureMetadata`, `EventObservation`, `StructureChangeRecord` | 영속 데이터 모델 |
