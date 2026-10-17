@@ -8,40 +8,47 @@ import typer
 from jinja2 import TemplateError
 from pydantic import ValidationError
 
-from scorenow_api_observer.collector import CaptureResult, capture_event_view
-from scorenow_api_observer.comparison import (
+from scorenow_api_observer.event_view.collector import (
+    CaptureResult,
+    capture_event_view,
+)
+from scorenow_api_observer.event_view.comparison import (
     StructureComparison,
     compare_observations,
     compare_with_previous_observation,
     convert_to_structure_change_record,
     find_latest_observations,
 )
-from scorenow_api_observer.event_observation import (
+from scorenow_api_observer.event_view.models import EventObservation
+from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
 )
-from scorenow_api_observer.event_view_request import (
+from scorenow_api_observer.event_view.request import (
     InvalidRequestedEventIdsError,
     parse_requested_event_ids,
 )
-from scorenow_api_observer.markdown_report import (
+from scorenow_api_observer.event_view.storage import (
+    find_capture_metadata_paths,
+    find_event_observation_paths,
+    save_structure_change_record,
+)
+from scorenow_api_observer.reporting.analysis import analyze_event_view_report
+from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
     render_sport_report_markdown,
 )
-from scorenow_api_observer.models import EventObservation
-from scorenow_api_observer.report_analysis import analyze_event_view_report
-from scorenow_api_observer.report_storage import (
+from scorenow_api_observer.reporting.storage import (
     build_report_output_path,
     save_report_text,
 )
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.sport_config import load_sport_codes_by_id
-from scorenow_api_observer.storage import (
-    find_capture_metadata_paths,
-    find_event_observation_paths,
-    save_structure_change_record,
+from scorenow_api_observer.upcoming.discovery import discover_upcoming_events
+from scorenow_api_observer.upcoming.targets import (
+    InvalidUpcomingTargetSelectionError,
+    load_upcoming_targets,
+    select_upcoming_targets,
 )
-from scorenow_api_observer.upcoming_discovery import discover_upcoming_events
-from scorenow_api_observer.upcoming_targets import load_upcoming_targets
 
 app = typer.Typer(
     name="observer",
@@ -211,15 +218,26 @@ def discover_upcoming(
         "--target-date",
         help="BETS Upcoming API에 전달할 UTC 기준 날짜(YYYY-MM-DD)",
     ),
+    league_labels: str | None = typer.Option(
+        None,
+        "--league-labels",
+        help="설정에서 선택할 리그 label 목록(쉼표 구분). 생략하면 전체 조회",
+    ),
 ) -> None:
-    """설정된 종목·리그의 예정 경기를 조회하여 Discovery JSON을 생성합니다."""
+    """설정에서 선택한 종목·리그의 예정 경기를 조회합니다."""
 
     target_date = _parse_target_date_or_exit(target_date_value)
 
     try:
-        targets = load_upcoming_targets()
+        configured_targets = load_upcoming_targets()
     except (OSError, ValueError) as error:
         typer.echo(f"Upcoming 조회 대상 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        targets = select_upcoming_targets(configured_targets, league_labels)
+    except InvalidUpcomingTargetSelectionError as error:
+        typer.echo(f"Upcoming 조회 대상을 선택하지 못했습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
     try:
@@ -243,26 +261,34 @@ def discover_upcoming(
         typer.echo(f"Upcoming Discovery 저장에 실패했습니다. {error}", err=True)
         raise typer.Exit(code=1) from None
 
-    discovery = result.discovery
-    typer.echo(f"Discovery 상태: {discovery.status}")
-    typer.echo(f"Capture 저장: {len(result.captures)}개")
-    typer.echo(f"예정 경기: {len(discovery.events)}개")
-    typer.echo(f"처리 실패: {len(discovery.failures)}개")
-    typer.echo(f"Discovery 저장 위치: {result.discovery_file_path}")
+    discovery_run = result.run
+    failures = [
+        discovery.failure
+        for discovery in result.league_discoveries
+        if discovery.failure is not None
+    ]
+    event_count = sum(len(discovery.events) for discovery in result.league_discoveries)
 
-    for failure in discovery.failures:
+    typer.echo(f"Discovery 상태: {discovery_run.status}")
+    typer.echo(f"Capture 저장: {len(result.captures)}개")
+    typer.echo(f"리그 Discovery 저장: {len(result.league_discoveries)}개")
+    typer.echo(f"예정 경기: {event_count}개")
+    typer.echo(f"처리 실패: {len(failures)}개")
+    typer.echo(f"Run 저장 위치: {result.run_file_path}")
+
+    for failure in failures:
         typer.echo(
             f"[{failure.league_label}] {failure.error_type}: {failure.error_message}",
             err=True,
         )
 
-    if discovery.status == "partial":
+    if discovery_run.status == "partial":
         typer.echo(
             "일부 조회 또는 응답 분석에 이상이 있습니다. "
             "저장된 Discovery와 CaptureMetadata를 확인하세요.",
             err=True,
         )
-    elif discovery.status == "failed":
+    elif discovery_run.status == "failed":
         typer.echo("예정 경기 조회에 모두 실패했습니다.", err=True)
         raise typer.Exit(code=1)
 

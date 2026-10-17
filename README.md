@@ -63,7 +63,8 @@ targets:
 
 `sport_id`는 [`config/betsapi_sports.yaml`](config/betsapi_sports.yaml)에 등록된
 값이어야 합니다. `label`은 파일명에도 사용되므로 설정 전체에서 고유한 영문 소문자,
-숫자, 하이픈 조합이어야 합니다.
+숫자, 하이픈 조합이어야 합니다. 종목별 Discovery 디렉터리에 사용하는 `sport_code`도
+설정 전체에서 고유한 같은 형식이어야 합니다.
 
 ### 5. 예정 경기 탐색
 
@@ -75,10 +76,10 @@ BETS API의 `day` 파라미터가 UTC 날짜이므로 한국에서 10월 17일 �
 uv run observer discover-upcoming --target-date 2026-10-16
 ```
 
-생성된 Discovery JSON의 `events`에서 `event_id`, UTC·KST 예정 시각, 리그와 대진을
-확인한 뒤 관찰할 경기를 선택합니다. 한 번의 Event View 요청에는 이벤트 ID를 최대
-10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`, `BETS_EVENT_ID_2`는
-실제로 확인한 값으로 교체합니다.
+생성된 리그별 Discovery JSON의 `events`에서 `event_id`, UTC·KST 예정 시각, 리그와
+대진을 확인한 뒤 관찰할 경기를 선택합니다. 한 번의 Event View 요청에는 이벤트 ID를
+최대 10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`,
+`BETS_EVENT_ID_2`는 실제로 확인한 값으로 교체합니다.
 
 ### 6. 첫 응답 수집
 
@@ -140,21 +141,32 @@ Observation 보고서를 같은 UTC 생성 시각으로 저장합니다.
 
 ### `observer discover-upcoming`
 
-설정된 종목·리그를 대상으로 Upcoming API를 한 번씩 호출하고, 원문·메타데이터와
-통합 Discovery JSON을 저장합니다.
+설정에서 선택한 종목·리그를 대상으로 Upcoming API를 한 번씩 호출하고,
+원문·메타데이터, 리그별 Discovery와 실행 Run JSON을 저장합니다.
 
 ```bash
 uv run observer discover-upcoming --target-date 2026-10-16
 ```
 
 - `--target-date`: BETS API에 전달할 UTC 기준 날짜이며 `YYYY-MM-DD` 형식입니다.
+- `--league-labels`: 설정 파일의 리그 label을 쉼표로 구분해 일부 리그만 조회합니다.
+  생략하면 설정된 전체 리그를 조회합니다. 중복 label은 한 번만 선택합니다.
+- 다음 예시는 같은 날짜에서 KBO와 MLB만 다시 조회합니다.
+
+  ```bash
+  uv run observer discover-upcoming \
+    --target-date 2026-10-16 \
+    --league-labels kbo,mlb
+  ```
+
 - 조회 대상 하나의 실패가 다른 종목·리그의 호출을 막지 않습니다.
 - 인증·결제·권한·호출 제한 오류(HTTP 401, 402, 403, 429)가 반환되면 불필요한
   후속 호출을 중단하고 조회하지 않은 대상을 실패 내역에 남깁니다.
 - 전체 성공은 `completed`, 일부 실패나 응답 이슈는 `partial`, 모든 대상 실패는
   `failed`로 저장합니다.
 - `partial`은 경고를 출력하지만 활용 가능한 결과를 보존하고 종료 코드 `0`으로
-  끝납니다. `failed`는 Discovery를 저장한 뒤 종료 코드 `1`로 끝납니다.
+  끝납니다. `failed`는 리그별 Discovery와 Run을 저장한 뒤 종료 코드 `1`로
+  끝납니다.
 - 설정 또는 날짜 입력 오류는 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
 - 페이징 호출은 수행하지 않습니다. 응답의 `pager.total`이 현재 `results` 개수보다
   크면 `pagination_required` 이슈와 `partial` 상태로 기록합니다.
@@ -253,7 +265,10 @@ data/
 ├── metadata/events-upcoming/{KST 호출 날짜}/{raw와 같은 파일명}
 ├── observations/event-view/{event_id}/{capture_file}
 ├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
-└── discoveries/events-upcoming/{UTC target_date}/{KST run_id}_discovery.json
+└── discoveries/events-upcoming/{UTC target_date}/
+    ├── runs/{KST run_id}_run.json
+    └── leagues/{sport_code}/{league_id}-{league_label}/
+        └── {KST run id}_discovery.json
 
 reports/
 └── event-view/YYYY-MM-DD/
@@ -297,9 +312,18 @@ JSON 안에서 수집 순서를 판별하는 `captured_at`, `started_at`, `compl
 ```
 
 Discovery의 `target_date`는 KST 경기 날짜가 아니라 API에 전달한 UTC 날짜입니다.
-`events`는 이벤트 ID로 중복을 제거한 뒤 `scheduled_at_utc`, `event_id` 순으로
-정렬합니다. 각 항목은 원문을 복제하지 않고 CaptureMetadata 경로와 0부터 시작하는
+각 리그 Discovery의 `events`는 `scheduled_at_utc`, `event_id` 순으로 정렬합니다.
+각 항목은 원문을 복제하지 않고 CaptureMetadata 경로와 0부터 시작하는
 `result_index`로 출처를 가리킵니다.
+
+리그 Discovery는 해당 리그의 한 번의 조회 결과만 담습니다. 성공·일부 응답 이슈는
+각각 `completed`·`partial`, 호출·HTTP·응답 분석 실패는 `failed`로 기록합니다.
+실패한 시도도 파일로 남기므로 가장 최근 시도가 실패했다는 사실을 확인할 수 있습니다.
+
+Run JSON은 `discover-upcoming` 명령 한 번의 실행 기록입니다. 실행 시각, 전체 상태,
+조회 대상과 생성된 리그 Discovery 경로만 담으며 이벤트 목록은 중복 저장하지 않습니다.
+따라서 일부 리그만 다시 조회해도 다른 리그의 과거 Discovery와 섞거나 덮어쓰지
+않습니다.
 
 Upcoming CaptureMetadata의 `returned_event_ids`는 응답 순서와 중복을 보존합니다.
 다음 이슈는 계산 가능한 범위에서 메타데이터에 함께 기록합니다.
@@ -315,7 +339,7 @@ Upcoming CaptureMetadata의 `returned_event_ids`는 응답 순서와 중복을 �
 | `pagination_required` | 현재 응답에 전체 결과가 모두 포함되지 않았습니다. |
 
 중복 ID, 예상 밖 종목·리그, 유효하지 않은 시작 시각의 이벤트는 원문과 이슈에는
-남기지만 통합 Discovery의 `events`에서는 제외합니다.
+남기지만 해당 리그 Discovery의 `events`에서는 제외합니다.
 
 ### 원문 응답
 

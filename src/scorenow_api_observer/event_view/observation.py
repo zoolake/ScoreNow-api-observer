@@ -1,6 +1,6 @@
 from typing import Any
 
-from scorenow_api_observer.models import EventObservation
+from scorenow_api_observer.event_view.models import EventObservation
 
 
 class InvalidEventObservationReferenceError(ValueError):

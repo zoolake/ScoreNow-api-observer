@@ -2,11 +2,11 @@ from typing import Any
 
 import pytest
 
-from scorenow_api_observer.event_observation import (
+from scorenow_api_observer.event_view.models import EventObservation
+from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
     extract_observed_event,
 )
-from scorenow_api_observer.models import EventObservation
 
 
 def _observation(*, event_id: str = "A", result_index: int = 0) -> EventObservation:

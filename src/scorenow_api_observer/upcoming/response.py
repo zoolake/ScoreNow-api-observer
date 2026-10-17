@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scorenow_api_observer.upcoming_models import (
+from scorenow_api_observer.upcoming.models import (
     UpcomingLeague,
     UpcomingParticipant,
     UpcomingResponseIssue,

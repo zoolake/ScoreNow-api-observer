@@ -5,9 +5,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from scorenow_api_observer import upcoming_discovery
-from scorenow_api_observer.upcoming_models import UpcomingDiscovery
-from scorenow_api_observer.upcoming_targets import UpcomingTarget
+from scorenow_api_observer.upcoming import discovery as upcoming_discovery
+from scorenow_api_observer.upcoming.models import (
+    LeagueUpcomingDiscovery,
+    UpcomingDiscoveryRun,
+)
+from scorenow_api_observer.upcoming.targets import UpcomingTarget
 
 
 def _target(
@@ -57,7 +60,7 @@ def _clock(*values: datetime):
     return lambda: next(iterator)
 
 
-def test_discover_upcoming_events_collects_sorts_and_saves_all_targets(
+def test_discover_upcoming_events_saves_run_and_each_league(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -106,23 +109,37 @@ def test_discover_upcoming_events_collects_sorts_and_saves_all_targets(
     )
 
     assert requested_targets == [("16", "225"), ("16", "349")]
-    assert result.discovery.status == "completed"
-    assert [event.event_id for event in result.discovery.events] == ["EARLY", "LATE"]
+    assert result.run.status == "completed"
+    assert [item.target.league_label for item in result.league_discoveries] == [
+        "mlb",
+        "kbo",
+    ]
+    assert [
+        event.event_id for item in result.league_discoveries for event in item.events
+    ] == ["LATE", "EARLY"]
     assert len(result.captures) == 2
-    assert len(result.discovery.capture_metadata_file_paths) == 2
-    assert result.discovery.failures == []
-    assert result.discovery_file_path.exists()
+    assert len(result.run.league_discovery_file_paths) == 2
+    assert result.run_file_path.exists()
     assert (
-        UpcomingDiscovery.model_validate_json(result.discovery_file_path.read_text())
-        == result.discovery
+        UpcomingDiscoveryRun.model_validate_json(result.run_file_path.read_text())
+        == result.run
     )
+    for discovery, file_path in zip(
+        result.league_discoveries,
+        result.league_discovery_file_paths,
+        strict=True,
+    ):
+        assert (
+            LeagueUpcomingDiscovery.model_validate_json(file_path.read_text())
+            == discovery
+        )
     assert all(
         "secret" not in path.read_text(encoding="utf-8")
         for path in (tmp_path / "metadata").rglob("*.json")
     )
 
 
-def test_discover_upcoming_events_saves_partial_result_after_target_failure(
+def test_discover_upcoming_events_saves_failed_league_and_partial_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -148,21 +165,29 @@ def test_discover_upcoming_events_saves_partial_result_after_target_failure(
         token="secret",
         target_date=date(2026, 10, 16),
         targets=targets,
-        now=_clock(start, start + timedelta(seconds=1), start + timedelta(seconds=2)),
+        now=_clock(
+            start,
+            start + timedelta(seconds=1),
+            start + timedelta(seconds=2),
+            start + timedelta(seconds=3),
+        ),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
     )
 
-    assert result.discovery.status == "partial"
+    assert result.run.status == "partial"
     assert len(result.captures) == 1
-    assert len(result.discovery.failures) == 1
-    assert result.discovery.failures[0].league_label == "kbo"
-    assert result.discovery.failures[0].error_type == "ConnectError"
-    assert (
-        result.discovery.failures[0].error_message == "API 서버에 연결하지 못했습니다."
-    )
-    assert "secret" not in result.discovery_file_path.read_text(encoding="utf-8")
+    assert [item.status for item in result.league_discoveries] == [
+        "completed",
+        "failed",
+    ]
+    failure = result.league_discoveries[1].failure
+    assert failure is not None
+    assert failure.league_label == "kbo"
+    assert failure.error_type == "ConnectError"
+    assert failure.error_message == "API 서버에 연결하지 못했습니다."
+    assert "secret" not in result.run_file_path.read_text(encoding="utf-8")
 
 
 def test_discover_upcoming_events_marks_response_issue_as_partial(
@@ -190,14 +215,15 @@ def test_discover_upcoming_events_marks_response_issue_as_partial(
         discovery_base_directory=tmp_path / "discoveries",
     )
 
-    assert result.discovery.status == "partial"
-    assert result.discovery.failures == []
+    assert result.run.status == "partial"
+    assert result.league_discoveries[0].status == "partial"
+    assert result.league_discoveries[0].failure is None
     assert [issue.code for issue in result.captures[0].metadata.response_issues] == [
         "pagination_required"
     ]
 
 
-def test_discover_upcoming_events_stops_after_fatal_http_error(
+def test_discover_upcoming_events_saves_skipped_leagues_after_fatal_http_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -223,12 +249,14 @@ def test_discover_upcoming_events_stops_after_fatal_http_error(
     )
 
     assert call_count == 1
-    assert result.discovery.status == "failed"
-    assert [failure.error_type for failure in result.discovery.failures] == [
-        "HttpStatusError",
-        "SkippedTargetError",
-    ]
-    assert result.discovery_file_path.exists()
+    assert result.run.status == "failed"
+    assert [
+        item.failure.error_type
+        for item in result.league_discoveries
+        if item.failure is not None
+    ] == ["HttpStatusError", "SkippedTargetError"]
+    assert len(result.league_discovery_file_paths) == 2
+    assert all(path.exists() for path in result.league_discovery_file_paths)
 
 
 def test_discover_upcoming_events_is_failed_when_every_request_fails(
@@ -246,12 +274,20 @@ def test_discover_upcoming_events_is_failed_when_every_request_fails(
         token="secret",
         target_date=date(2026, 10, 16),
         targets=[_target("225", "mlb"), _target("349", "kbo")],
-        now=_clock(start, start + timedelta(seconds=1)),
+        now=_clock(
+            start,
+            start + timedelta(seconds=1),
+            start + timedelta(seconds=2),
+            start + timedelta(seconds=3),
+        ),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
     )
 
-    assert result.discovery.status == "failed"
-    assert len(result.discovery.failures) == 2
-    assert result.discovery_file_path.exists()
+    assert result.run.status == "failed"
+    assert [item.status for item in result.league_discoveries] == [
+        "failed",
+        "failed",
+    ]
+    assert result.run_file_path.exists()

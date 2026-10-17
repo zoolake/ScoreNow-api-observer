@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from scorenow_api_observer.event_view_response import (
+from scorenow_api_observer.event_view.response import (
     EventViewResponseIssue,
     InvalidEventViewResponseShapeError,
     ObservableEvent,

@@ -1,7 +1,7 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 UpcomingResponseIssueCode = Literal[
     "invalid_event_shape",
@@ -104,16 +104,56 @@ class UpcomingDiscoveryFailure(BaseModel):
     error_message: str
 
 
-class UpcomingDiscovery(BaseModel):
-    """여러 Upcoming 호출의 결과를 한 번에 탐색하기 위한 통합 기록입니다."""
+UpcomingDiscoveryStatus = Literal["completed", "partial", "failed"]
+
+
+class LeagueUpcomingDiscovery(BaseModel):
+    """한 리그에 대한 한 번의 Upcoming 조회 결과입니다."""
 
     schema_version: Literal[1] = 1
     discovery_run_id: str
-    status: Literal["completed", "partial", "failed"]
+    status: UpcomingDiscoveryStatus
+    completed_at: datetime
+    target_date: date
+    target: UpcomingDiscoveryTarget
+    capture_metadata_file_path: str | None
+    events: list[DiscoveredUpcomingEvent]
+    failure: UpcomingDiscoveryFailure | None
+
+    @model_validator(mode="after")
+    def validate_status_details(self) -> Self:
+        if self.status == "failed" and self.failure is None:
+            raise ValueError("failed 리그 Discovery에는 실패 내역이 필요합니다.")
+        if self.status == "failed" and self.events:
+            raise ValueError("failed 리그 Discovery에는 이벤트를 둘 수 없습니다.")
+        if self.status != "failed" and self.failure is not None:
+            raise ValueError(
+                "completed 또는 partial 리그 Discovery에는 실패 내역을 둘 수 없습니다."
+            )
+        if self.status != "failed" and self.capture_metadata_file_path is None:
+            raise ValueError(
+                "completed 또는 partial 리그 Discovery에는 CaptureMetadata 경로가 "
+                "필요합니다."
+            )
+        return self
+
+
+class UpcomingDiscoveryRun(BaseModel):
+    """한 번의 discover-upcoming 명령 실행과 리그별 결과 파일의 목록입니다."""
+
+    schema_version: Literal[1] = 1
+    discovery_run_id: str
+    status: UpcomingDiscoveryStatus
     started_at: datetime
     completed_at: datetime
     target_date: date
     requested_targets: list[UpcomingDiscoveryTarget]
-    capture_metadata_file_paths: list[str]
-    events: list[DiscoveredUpcomingEvent]
-    failures: list[UpcomingDiscoveryFailure]
+    league_discovery_file_paths: list[str]
+
+    @model_validator(mode="after")
+    def validate_target_file_count(self) -> Self:
+        if len(self.requested_targets) != len(self.league_discovery_file_paths):
+            raise ValueError(
+                "요청 대상 수와 리그 Discovery 파일 경로 수가 일치해야 합니다."
+            )
+        return self

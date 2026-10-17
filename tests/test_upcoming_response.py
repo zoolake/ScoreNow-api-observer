@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from scorenow_api_observer.upcoming_response import (
+from scorenow_api_observer.upcoming.response import (
     InvalidUpcomingResponseShapeError,
     analyze_upcoming_response,
 )

@@ -3,16 +3,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
-from scorenow_api_observer.event_observation import extract_observed_event
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
-from scorenow_api_observer.json_structure import extract_json_structure
-from scorenow_api_observer.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.sport_classification import classify_event_sport
-from scorenow_api_observer.storage import (
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.observation import extract_observed_event
+from scorenow_api_observer.event_view.response import EventViewResponseIssue
+from scorenow_api_observer.event_view.storage import (
     load_capture_metadata,
     load_event_observation,
     load_json_file,
 )
+from scorenow_api_observer.json_structure import extract_json_structure
+from scorenow_api_observer.sport_classification import classify_event_sport
 
 
 @dataclass(frozen=True)

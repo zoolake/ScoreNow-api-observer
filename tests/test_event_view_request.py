@@ -1,6 +1,6 @@
 import pytest
 
-from scorenow_api_observer.event_view_request import (
+from scorenow_api_observer.event_view.request import (
     MAX_EVENT_IDS_PER_REQUEST,
     InvalidRequestedEventIdsError,
     parse_requested_event_ids,

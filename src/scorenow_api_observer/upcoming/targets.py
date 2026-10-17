@@ -37,6 +37,10 @@ class InvalidUpcomingTargetsConfigError(ValueError):
     """Upcoming 조회 대상 설정이 올바르지 않을 때 발생합니다."""
 
 
+class InvalidUpcomingTargetSelectionError(ValueError):
+    """CLI에서 선택한 리그 label이 올바르지 않을 때 발생합니다."""
+
+
 class UpcomingLeagueTargetConfig(BaseModel):
     """설정 파일에 기록하는 리그별 Upcoming 조회 대상입니다."""
 
@@ -150,3 +154,30 @@ def load_upcoming_targets(
         for sport_target in config.targets
         for league_target in sport_target.leagues
     ]
+
+
+def select_upcoming_targets(
+    targets: list[UpcomingTarget],
+    league_labels: str | None,
+) -> list[UpcomingTarget]:
+    """쉼표로 구분한 label에 해당하는 대상을 설정 순서대로 선택합니다."""
+
+    if league_labels is None:
+        return list(targets)
+
+    parsed_labels = [label.strip() for label in league_labels.split(",")]
+    if not parsed_labels or any(not label for label in parsed_labels):
+        raise InvalidUpcomingTargetSelectionError(
+            "리그 label은 빈 값 없이 쉼표로 구분해야 합니다."
+        )
+
+    selected_labels = set(parsed_labels)
+    known_labels = {target.league_label for target in targets}
+    unknown_labels = sorted(selected_labels - known_labels)
+    if unknown_labels:
+        raise InvalidUpcomingTargetSelectionError(
+            "설정에 등록되지 않은 리그 label이 있습니다: "
+            + ", ".join(repr(label) for label in unknown_labels)
+        )
+
+    return [target for target in targets if target.league_label in selected_labels]

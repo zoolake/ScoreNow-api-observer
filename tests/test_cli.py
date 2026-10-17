@@ -7,20 +7,23 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
-from scorenow_api_observer.collector import (
+from scorenow_api_observer.event_view.collector import (
     CaptureResult,
     EventObservationSaveFailure,
 )
-from scorenow_api_observer.comparison import CaptureComparison, StructureComparison
-from scorenow_api_observer.event_observation import (
-    InvalidEventObservationReferenceError,
+from scorenow_api_observer.event_view.comparison import (
+    CaptureComparison,
+    StructureComparison,
 )
-from scorenow_api_observer.models import (
+from scorenow_api_observer.event_view.models import (
     CaptureMetadata,
     EventObservation,
     StructureChangeRecord,
 )
-from scorenow_api_observer.report_analysis import (
+from scorenow_api_observer.event_view.observation import (
+    InvalidEventObservationReferenceError,
+)
+from scorenow_api_observer.reporting.analysis import (
     CaptureMetadataLoadFailure,
     EventViewReportAnalysis,
     ObservedEventResolutionFailure,

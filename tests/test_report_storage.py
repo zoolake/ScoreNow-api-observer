@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-from scorenow_api_observer.report_storage import (
+from scorenow_api_observer.reporting.storage import (
     ReportFormat,
     build_report_output_path,
     save_report_text,

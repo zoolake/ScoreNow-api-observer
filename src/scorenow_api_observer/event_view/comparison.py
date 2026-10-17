@@ -3,20 +3,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scorenow_api_observer.event_observation import extract_observed_event
-from scorenow_api_observer.json_structure import extract_json_structure
-from scorenow_api_observer.models import (
+from scorenow_api_observer.event_view.models import (
     CaptureMetadata,
     EventObservation,
     StructureChangeRecord,
     TypeChangeRecord,
 )
-from scorenow_api_observer.storage import (
+from scorenow_api_observer.event_view.observation import extract_observed_event
+from scorenow_api_observer.event_view.storage import (
     OBSERVATION_DIRECTORY,
     load_capture_metadata,
     load_event_observation,
     load_json_file,
 )
+from scorenow_api_observer.json_structure import extract_json_structure
 
 
 @dataclass(frozen=True)

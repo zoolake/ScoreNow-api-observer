@@ -83,9 +83,14 @@ def test_load_sport_codes_by_id_rejects_invalid_structure(
         ('sport_ids:\n  "   ": football\n', "비어 있는 sport_id"),
         ('sport_ids:\n  "1": 1\n', "종목 코드는 문자열"),
         ('sport_ids:\n  "1": "   "\n', "종목 코드가 비어 있습니다"),
+        ('sport_ids:\n  "1": "Foot Ball"\n', "영문 소문자"),
         (
             'sport_ids:\n  "1": football\n  " 1 ": baseball\n',
             "공백 제거 후 중복되는 sport_id",
+        ),
+        (
+            'sport_ids:\n  "1": football\n  "16": " football "\n',
+            "중복되는 종목 코드",
         ),
     ],
 )

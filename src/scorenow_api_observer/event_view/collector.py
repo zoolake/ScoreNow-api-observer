@@ -5,12 +5,12 @@ from pathlib import Path
 import httpx
 
 from scorenow_api_observer.bets_api_client import EVENT_VIEW_ENDPOINT, get_event_view
-from scorenow_api_observer.event_view_response import (
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.response import (
     InvalidEventViewResponseShapeError,
     analyze_event_view_response,
 )
-from scorenow_api_observer.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.storage import (
+from scorenow_api_observer.event_view.storage import (
     save_capture_metadata,
     save_event_observation,
     save_raw_response,

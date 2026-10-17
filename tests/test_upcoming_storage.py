@@ -3,14 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.upcoming_models import (
+from scorenow_api_observer.upcoming.models import (
+    LeagueUpcomingDiscovery,
     UpcomingCaptureMetadata,
-    UpcomingDiscovery,
+    UpcomingDiscoveryRun,
+    UpcomingDiscoveryTarget,
     UpcomingRequestQuery,
 )
-from scorenow_api_observer.upcoming_storage import (
+from scorenow_api_observer.upcoming.storage import (
+    save_league_upcoming_discovery,
     save_upcoming_capture_metadata,
-    save_upcoming_discovery,
+    save_upcoming_discovery_run,
     save_upcoming_raw_response,
 )
 
@@ -84,27 +87,73 @@ def test_save_upcoming_raw_response_does_not_overwrite_existing_file(
     assert saved_path.read_bytes() == b"first"
 
 
-def test_save_upcoming_discovery_uses_utc_target_date_and_run_id(
+def _target() -> UpcomingDiscoveryTarget:
+    return UpcomingDiscoveryTarget(
+        sport_id="16",
+        sport_code="baseball",
+        league_id="225",
+        league_label="mlb",
+    )
+
+
+def test_save_league_upcoming_discovery_uses_target_and_run_id(
     tmp_path: Path,
 ) -> None:
-    discovery = UpcomingDiscovery(
+    discovery = LeagueUpcomingDiscovery(
+        discovery_run_id="2026-10-17T01-00-00_KST",
+        status="completed",
+        completed_at=datetime(2026, 10, 16, 16, 1, tzinfo=UTC),
+        target_date=date(2026, 10, 16),
+        target=_target(),
+        capture_metadata_file_path="data/metadata/capture.json",
+        events=[],
+        failure=None,
+    )
+
+    saved_path = save_league_upcoming_discovery(
+        discovery,
+        base_directory=tmp_path,
+    )
+
+    assert saved_path == (
+        tmp_path
+        / "2026-10-16"
+        / "leagues"
+        / "baseball"
+        / "225-mlb"
+        / "2026-10-17T01-00-00_KST_discovery.json"
+    )
+    assert (
+        LeagueUpcomingDiscovery.model_validate_json(saved_path.read_text()) == discovery
+    )
+
+    with pytest.raises(FileExistsError):
+        save_league_upcoming_discovery(discovery, base_directory=tmp_path)
+
+
+def test_save_upcoming_discovery_run_does_not_duplicate_events(
+    tmp_path: Path,
+) -> None:
+    discovery_run = UpcomingDiscoveryRun(
         discovery_run_id="2026-10-17T01-00-00_KST",
         status="completed",
         started_at=datetime(2026, 10, 16, 16, 0, tzinfo=UTC),
         completed_at=datetime(2026, 10, 16, 16, 1, tzinfo=UTC),
         target_date=date(2026, 10, 16),
-        requested_targets=[],
-        capture_metadata_file_paths=[],
-        events=[],
-        failures=[],
+        requested_targets=[_target()],
+        league_discovery_file_paths=["league-discovery.json"],
     )
 
-    saved_path = save_upcoming_discovery(discovery, base_directory=tmp_path)
+    saved_path = save_upcoming_discovery_run(
+        discovery_run,
+        base_directory=tmp_path,
+    )
 
     assert saved_path == (
-        tmp_path / "2026-10-16" / "2026-10-17T01-00-00_KST_discovery.json"
+        tmp_path / "2026-10-16" / "runs" / "2026-10-17T01-00-00_KST_run.json"
     )
-    assert UpcomingDiscovery.model_validate_json(saved_path.read_text()) == discovery
-
-    with pytest.raises(FileExistsError):
-        save_upcoming_discovery(discovery, base_directory=tmp_path)
+    assert (
+        UpcomingDiscoveryRun.model_validate_json(saved_path.read_text())
+        == discovery_run
+    )
+    assert "events" not in saved_path.read_text(encoding="utf-8")

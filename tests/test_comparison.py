@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.comparison import (
+from scorenow_api_observer.event_view.comparison import (
     CaptureComparison,
     StructureComparison,
     TypeChange,
@@ -12,8 +12,8 @@ from scorenow_api_observer.comparison import (
     find_latest_observations,
     find_previous_observation,
 )
-from scorenow_api_observer.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.storage import (
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.storage import (
     save_capture_metadata,
     save_event_observation,
     save_raw_response,

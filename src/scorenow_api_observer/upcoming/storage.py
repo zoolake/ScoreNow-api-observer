@@ -2,9 +2,10 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scorenow_api_observer.upcoming_models import (
+from scorenow_api_observer.upcoming.models import (
+    LeagueUpcomingDiscovery,
     UpcomingCaptureMetadata,
-    UpcomingDiscovery,
+    UpcomingDiscoveryRun,
 )
 
 UPCOMING_RAW_DATA_DIRECTORY = Path("data/raw/events-upcoming")
@@ -55,20 +56,45 @@ def save_upcoming_capture_metadata(
     return output_path
 
 
-def save_upcoming_discovery(
-    discovery: UpcomingDiscovery,
+def save_league_upcoming_discovery(
+    discovery: LeagueUpcomingDiscovery,
     *,
     base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
 ) -> Path:
-    """통합 Discovery를 UTC target_date별 디렉터리에 중복 없이 저장합니다."""
+    """리그별 Discovery를 UTC target_date와 종목·리그 경로에 저장합니다."""
 
-    output_directory = base_directory / discovery.target_date.isoformat()
+    target = discovery.target
+    output_directory = (
+        base_directory
+        / discovery.target_date.isoformat()
+        / "leagues"
+        / target.sport_code
+        / f"{target.league_id}-{target.league_label}"
+    )
     output_directory.mkdir(parents=True, exist_ok=True)
 
     output_path = output_directory / f"{discovery.discovery_run_id}_discovery.json"
     discovery_json = discovery.model_dump_json(indent=2)
     with output_path.open("x", encoding="utf-8") as output_file:
         output_file.write(discovery_json + "\n")
+
+    return output_path
+
+
+def save_upcoming_discovery_run(
+    discovery_run: UpcomingDiscoveryRun,
+    *,
+    base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
+) -> Path:
+    """Discovery 실행 기록을 UTC target_date의 runs 디렉터리에 저장합니다."""
+
+    output_directory = base_directory / discovery_run.target_date.isoformat() / "runs"
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_directory / f"{discovery_run.discovery_run_id}_run.json"
+    run_json = discovery_run.model_dump_json(indent=2)
+    with output_path.open("x", encoding="utf-8") as output_file:
+        output_file.write(run_json + "\n")
 
     return output_path
 

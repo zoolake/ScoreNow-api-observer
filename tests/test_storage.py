@@ -5,14 +5,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
-from scorenow_api_observer.models import (
+from scorenow_api_observer.event_view.models import (
     CaptureMetadata,
     EventObservation,
     StructureChangeRecord,
     TypeChangeRecord,
 )
-from scorenow_api_observer.storage import (
+from scorenow_api_observer.event_view.response import EventViewResponseIssue
+from scorenow_api_observer.event_view.storage import (
     find_capture_metadata_paths,
     find_event_observation_paths,
     load_capture_metadata,

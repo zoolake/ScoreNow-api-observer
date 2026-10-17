@@ -4,12 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.event_observation import (
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
 )
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
-from scorenow_api_observer.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.report_analysis import (
+from scorenow_api_observer.event_view.response import EventViewResponseIssue
+from scorenow_api_observer.event_view.storage import (
+    save_capture_metadata,
+    save_event_observation,
+)
+from scorenow_api_observer.reporting.analysis import (
     ObservedEvent,
     ResponseAnalysisStatusSummary,
     ResponseIssueSummary,
@@ -24,7 +28,6 @@ from scorenow_api_observer.report_analysis import (
     summarize_sport_fields,
     summarize_sport_observations,
 )
-from scorenow_api_observer.storage import save_capture_metadata, save_event_observation
 
 
 def _save_observation_source(

@@ -1,8 +1,10 @@
+import re
 from pathlib import Path
 
 import yaml
 
 SPORT_CONFIG_PATH = Path("config/betsapi_sports.yaml")
+SAFE_SPORT_CODE_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class InvalidSportConfigError(ValueError):
@@ -44,6 +46,7 @@ def load_sport_codes_by_id(file_path: Path = SPORT_CONFIG_PATH) -> dict[str, str
         )
 
     sport_codes_by_id: dict[str, str] = {}
+    sport_ids_by_code: dict[str, str] = {}
     for sport_id, sport_code in raw_sport_codes_by_id.items():
         if not isinstance(sport_id, str):
             raise InvalidSportConfigError(
@@ -68,11 +71,23 @@ def load_sport_codes_by_id(file_path: Path = SPORT_CONFIG_PATH) -> dict[str, str
                 f"sport_id {normalized_sport_id!r}의 종목 코드가 비어 있습니다."
             )
 
+        if SAFE_SPORT_CODE_PATTERN.fullmatch(normalized_sport_code) is None:
+            raise InvalidSportConfigError(
+                f"sport_id {normalized_sport_id!r}의 종목 코드는 영문 소문자, 숫자, "
+                f"하이픈만 사용할 수 있습니다: {normalized_sport_code!r}"
+            )
+
         if normalized_sport_id in sport_codes_by_id:
             raise InvalidSportConfigError(
                 f"공백 제거 후 중복되는 sport_id가 있습니다: {normalized_sport_id!r}"
             )
 
+        if normalized_sport_code in sport_ids_by_code:
+            raise InvalidSportConfigError(
+                f"공백 제거 후 중복되는 종목 코드가 있습니다: {normalized_sport_code!r}"
+            )
+
         sport_codes_by_id[normalized_sport_id] = normalized_sport_code
+        sport_ids_by_code[normalized_sport_code] = normalized_sport_id
 
     return sport_codes_by_id

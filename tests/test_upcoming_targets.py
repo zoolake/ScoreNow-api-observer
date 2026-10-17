@@ -3,10 +3,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scorenow_api_observer.upcoming_targets import (
+from scorenow_api_observer.upcoming.targets import (
     InvalidUpcomingTargetsConfigError,
+    InvalidUpcomingTargetSelectionError,
     UpcomingTarget,
     load_upcoming_targets,
+    select_upcoming_targets,
 )
 
 
@@ -133,3 +135,35 @@ targets:
 
     with pytest.raises(InvalidUpcomingTargetsConfigError, match="등록되지 않은"):
         load_upcoming_targets(config_path, _sport_config(tmp_path))
+
+
+def test_select_upcoming_targets_uses_config_order_and_deduplicates_labels() -> None:
+    targets = [
+        UpcomingTarget("16", "baseball", "225", "mlb"),
+        UpcomingTarget("16", "baseball", "349", "kbo"),
+    ]
+
+    result = select_upcoming_targets(targets, " kbo,mlb,kbo ")
+
+    assert result == targets
+
+
+def test_select_upcoming_targets_returns_all_when_labels_are_omitted() -> None:
+    targets = [UpcomingTarget("16", "baseball", "225", "mlb")]
+
+    assert select_upcoming_targets(targets, None) == targets
+
+
+@pytest.mark.parametrize("league_labels", ["", "mlb,", ",mlb"])
+def test_select_upcoming_targets_rejects_empty_label(league_labels: str) -> None:
+    targets = [UpcomingTarget("16", "baseball", "225", "mlb")]
+
+    with pytest.raises(InvalidUpcomingTargetSelectionError, match="빈 값 없이"):
+        select_upcoming_targets(targets, league_labels)
+
+
+def test_select_upcoming_targets_rejects_unknown_label() -> None:
+    targets = [UpcomingTarget("16", "baseball", "225", "mlb")]
+
+    with pytest.raises(InvalidUpcomingTargetSelectionError, match="unknown"):
+        select_upcoming_targets(targets, "unknown")

@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
+from scorenow_api_observer.event_view.response import EventViewResponseIssue
 
 
 class CaptureMetadata(BaseModel):

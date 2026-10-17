@@ -3,11 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.markdown_report import (
-    render_endpoint_report_markdown,
-    render_sport_report_markdown,
-)
-from scorenow_api_observer.report_analysis import (
+from scorenow_api_observer.reporting.analysis import (
     CaptureMetadataLoadFailure,
     EventViewReportAnalysis,
     ObservedEventResolutionFailure,
@@ -15,6 +11,10 @@ from scorenow_api_observer.report_analysis import (
     ResponseIssueSummary,
     SportFieldSummary,
     SportObservationSummary,
+)
+from scorenow_api_observer.reporting.markdown import (
+    render_endpoint_report_markdown,
+    render_sport_report_markdown,
 )
 
 

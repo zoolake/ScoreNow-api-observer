@@ -4,12 +4,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scorenow_api_observer.event_view_response import analyze_event_view_response
-from scorenow_api_observer.models import (
+from scorenow_api_observer.event_view.models import (
     CaptureMetadata,
     EventObservation,
     StructureChangeRecord,
 )
+from scorenow_api_observer.event_view.response import analyze_event_view_response
 
 RAW_DATA_DIRECTORY = Path("data/raw/event-view")
 METADATA_DIRECTORY = Path("data/metadata/event-view")

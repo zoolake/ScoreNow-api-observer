@@ -3,7 +3,7 @@ from html import escape
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-from scorenow_api_observer.report_analysis import EventViewReportAnalysis
+from scorenow_api_observer.reporting.analysis import EventViewReportAnalysis
 
 
 def _escape_markdown_table_cell(value: object) -> str:
@@ -18,7 +18,7 @@ def _create_markdown_environment() -> Environment:
     """패키지의 Markdown 템플릿을 읽는 공통 Jinja 환경을 만듭니다."""
 
     environment = Environment(
-        loader=PackageLoader("scorenow_api_observer", "templates/markdown"),
+        loader=PackageLoader("scorenow_api_observer.reporting", "templates/markdown"),
         undefined=StrictUndefined,
         autoescape=False,
         keep_trailing_newline=True,

@@ -4,9 +4,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from scorenow_api_observer import collector
-from scorenow_api_observer.event_view_response import EventViewResponseIssue
-from scorenow_api_observer.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view import collector
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.response import EventViewResponseIssue
 
 
 def _response(*, content: bytes, content_type: str) -> httpx.Response:
