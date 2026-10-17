@@ -99,6 +99,30 @@ def save_upcoming_discovery_run(
     return output_path
 
 
+def find_league_upcoming_discovery_paths(
+    base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
+) -> list[Path]:
+    """저장된 리그별 Discovery 파일 경로를 일정한 순서로 반환합니다."""
+
+    return sorted(
+        path
+        for path in base_directory.glob(
+            "*/leagues/*/*/*_discovery.json",
+        )
+        if path.is_file()
+    )
+
+
+def load_league_upcoming_discovery(
+    file_path: Path,
+) -> LeagueUpcomingDiscovery:
+    """리그별 Discovery JSON 파일을 현재 모델로 읽습니다."""
+
+    return LeagueUpcomingDiscovery.model_validate_json(
+        file_path.read_text(encoding="utf-8")
+    )
+
+
 def _capture_file_name(*, league_label: str, kst_captured_at: datetime) -> str:
     timestamp = kst_captured_at.strftime("%Y-%m-%dT%H-%M-%S")
     return f"{league_label}_{timestamp}_KST_capture.json"

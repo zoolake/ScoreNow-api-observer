@@ -2,6 +2,7 @@ import json
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import typer
@@ -43,7 +44,19 @@ from scorenow_api_observer.reporting.storage import (
 )
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.sport_config import load_sport_codes_by_id
+from scorenow_api_observer.upcoming.candidates import (
+    InvalidUpcomingCandidateFilterError,
+    LatestLeagueDiscoveries,
+    UpcomingCandidate,
+    normalize_candidate_sport_code,
+    parse_candidate_league_labels,
+    resolve_latest_league_discoveries,
+    select_upcoming_candidates,
+)
 from scorenow_api_observer.upcoming.discovery import discover_upcoming_events
+from scorenow_api_observer.upcoming.storage import (
+    find_league_upcoming_discovery_paths,
+)
 from scorenow_api_observer.upcoming.targets import (
     InvalidUpcomingTargetSelectionError,
     load_upcoming_targets,
@@ -55,6 +68,7 @@ app = typer.Typer(
     help="BETS API 응답 수집 및 변화를 확인하는 CLI 도구",
     no_args_is_help=True,
 )
+KST = ZoneInfo("Asia/Seoul")
 
 
 @app.callback()
@@ -291,6 +305,78 @@ def discover_upcoming(
     elif discovery_run.status == "failed":
         typer.echo("예정 경기 조회에 모두 실패했습니다.", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("upcoming-candidates")
+def upcoming_candidates(
+    within_minutes: int = typer.Option(
+        10,
+        "--within-minutes",
+        min=1,
+        help="현재부터 후보로 조회할 시작 예정 범위(분)",
+    ),
+    sport_code: str | None = typer.Option(
+        None,
+        "--sport-code",
+        help="조회할 내부 종목 코드. 생략하면 전체 종목",
+    ),
+    league_labels: str | None = typer.Option(
+        None,
+        "--league-labels",
+        help="조회할 리그 label 목록(쉼표 구분). 생략하면 전체 리그",
+    ),
+) -> None:
+    """저장된 Discovery에서 곧 시작하는 경기 후보를 조회합니다."""
+
+    try:
+        normalized_sport_code = normalize_candidate_sport_code(sport_code)
+        normalized_league_labels = parse_candidate_league_labels(league_labels)
+    except InvalidUpcomingCandidateFilterError as error:
+        typer.echo(f"후보 조회 필터가 올바르지 않습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        discovery_paths = find_league_upcoming_discovery_paths()
+        latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
+    except OSError as error:
+        typer.echo(f"Discovery 파일 탐색에 실패했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _print_upcoming_discovery_warnings(latest_discoveries)
+
+    typer.echo(f"저장된 리그 Discovery: {len(discovery_paths)}개")
+    typer.echo(f"사용 가능한 최신 Discovery: {len(latest_discoveries.selected)}개")
+    if not latest_discoveries.selected:
+        typer.echo("사용 가능한 리그 Discovery가 없습니다.", err=True)
+        raise typer.Exit(code=1)
+
+    now = _utc_now()
+    try:
+        selection = select_upcoming_candidates(
+            latest_discoveries.selected,
+            now=now,
+            within_minutes=within_minutes,
+            sport_code=normalized_sport_code,
+            league_labels=normalized_league_labels,
+        )
+    except ValueError as error:
+        typer.echo(f"예정 경기 후보를 계산하지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"기준 시각(UTC): {now.isoformat()}")
+    typer.echo(f"기준 시각(KST): {now.astimezone(KST).isoformat()}")
+    typer.echo(f"조회 범위: 현재부터 {within_minutes}분 이내")
+    typer.echo(f"후보 경기: {len(selection.candidates)}개")
+
+    if selection.duplicate_event_ids:
+        typer.echo(
+            "중복된 이벤트 ID는 최신 Discovery의 값으로 한 번만 표시합니다: "
+            + ", ".join(selection.duplicate_event_ids),
+            err=True,
+        )
+
+    for index, candidate in enumerate(selection.candidates, start=1):
+        _print_upcoming_candidate(index=index, candidate=candidate, now=now)
 
 
 @app.command()
@@ -537,6 +623,101 @@ def _parse_target_date_or_exit(value: str) -> date:
             err=True,
         )
         raise typer.Exit(code=2) from None
+
+
+def _print_upcoming_discovery_warnings(
+    latest_discoveries: LatestLeagueDiscoveries,
+) -> None:
+    for failure in latest_discoveries.load_failures:
+        typer.echo(
+            "Discovery 파일을 읽지 못했습니다: "
+            f"{failure.file_path} ({failure.error_type}: {failure.error_message})",
+            err=True,
+        )
+
+    for unavailable in latest_discoveries.unavailable:
+        latest_attempt = unavailable.latest_attempt
+        discovery = latest_attempt.discovery
+        target = discovery.target
+        failure = discovery.failure
+        failure_description = (
+            f"{failure.error_type}: {failure.error_message}"
+            if failure is not None
+            else discovery.status
+        )
+        typer.echo(
+            "사용 가능한 결과가 없는 리그입니다: "
+            f"{target.sport_code}/{target.league_label}, "
+            f"target_date={discovery.target_date.isoformat()} "
+            f"({failure_description})",
+            err=True,
+        )
+
+    for fallback in latest_discoveries.fallbacks:
+        latest = fallback.latest_failed
+        selected = fallback.selected
+        target = selected.discovery.target
+        typer.echo(
+            "최신 시도가 실패하여 이전 Discovery를 사용합니다: "
+            f"{target.sport_code}/{target.league_label}, "
+            f"target_date={selected.discovery.target_date.isoformat()}, "
+            f"latest={latest.file_path}, selected={selected.file_path}",
+            err=True,
+        )
+
+    for selected in latest_discoveries.selected:
+        if selected.discovery.status != "partial":
+            continue
+        target = selected.discovery.target
+        typer.echo(
+            "응답 이슈가 있는 partial Discovery를 사용합니다: "
+            f"{target.sport_code}/{target.league_label}, "
+            f"target_date={selected.discovery.target_date.isoformat()}, "
+            f"file={selected.file_path}",
+            err=True,
+        )
+
+
+def _print_upcoming_candidate(
+    *,
+    index: int,
+    candidate: UpcomingCandidate,
+    now: datetime,
+) -> None:
+    event = candidate.event
+    league_name = event.league.name or "이름 없음"
+    home_name = event.home.name or "이름 없음"
+    away_name = event.away.name or "이름 없음"
+    remaining_time = _format_remaining_time(
+        scheduled_at=event.scheduled_at_utc,
+        now=now,
+    )
+
+    typer.echo("")
+    typer.echo(f"[{index}] 이벤트 ID: {event.event_id}")
+    typer.echo(
+        f"  종목/리그: {event.sport_code} / {candidate.league_label} ({league_name})"
+    )
+    typer.echo(f"  대진: {home_name} vs {away_name}")
+    typer.echo(f"  시작 예정(KST): {event.scheduled_at_kst.isoformat()}")
+    typer.echo(f"  시작 예정(UTC): {event.scheduled_at_utc.isoformat()}")
+    typer.echo(f"  남은 시간: {remaining_time}")
+    typer.echo(
+        "  Discovery: "
+        f"{candidate.discovery_status} / "
+        f"{candidate.discovery_completed_at.isoformat()}"
+    )
+    typer.echo(f"  Discovery 파일: {candidate.discovery_file_path}")
+
+
+def _format_remaining_time(*, scheduled_at: datetime, now: datetime) -> str:
+    remaining_seconds = max(0, int((scheduled_at - now).total_seconds()))
+    minutes, seconds = divmod(remaining_seconds, 60)
+    return f"{minutes}분 {seconds}초"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 if __name__ == "__main__":

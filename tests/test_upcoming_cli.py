@@ -1,17 +1,26 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
+from scorenow_api_observer.upcoming.candidates import (
+    LatestLeagueDiscoveries,
+    LeagueDiscoveryFallback,
+    LoadedLeagueDiscovery,
+)
 from scorenow_api_observer.upcoming.models import (
+    DiscoveredUpcomingEvent,
     LeagueUpcomingDiscovery,
     UpcomingDiscoveryFailure,
     UpcomingDiscoveryRun,
     UpcomingDiscoveryTarget,
+    UpcomingLeague,
+    UpcomingParticipant,
 )
 from scorenow_api_observer.upcoming.targets import UpcomingTarget
 
@@ -19,6 +28,9 @@ from scorenow_api_observer.upcoming.targets import UpcomingTarget
 class _FakeSettings:
     bets_api_base_url = "https://example.test"
     bets_api_token = SecretStr("test-token")
+
+
+KST = ZoneInfo("Asia/Seoul")
 
 
 def _discovery_target(league_id: str, label: str) -> UpcomingDiscoveryTarget:
@@ -206,3 +218,156 @@ def test_discover_upcoming_config_error_exits_with_two(monkeypatch) -> None:
 
     assert result.exit_code == 2
     assert "Upcoming 조회 대상 설정을 읽지 못했습니다." in result.output
+
+
+def _candidate_discovery(
+    *,
+    completed_at: datetime,
+    event_id: str | None = "EVENT-A",
+) -> LeagueUpcomingDiscovery:
+    events = []
+    if event_id is not None:
+        scheduled_at = datetime(2026, 10, 18, 1, 5, tzinfo=UTC)
+        events.append(
+            DiscoveredUpcomingEvent(
+                event_id=event_id,
+                sport_id="16",
+                sport_code="baseball",
+                time_status="0",
+                scheduled_at_utc=scheduled_at,
+                scheduled_at_kst=scheduled_at.astimezone(KST),
+                league=UpcomingLeague(
+                    id="225",
+                    name="MLB",
+                    country_code="us",
+                ),
+                home=UpcomingParticipant(id="H", name="Home"),
+                away=UpcomingParticipant(id="A", name="Away"),
+                source_capture_metadata_file_path="metadata.json",
+                result_index=0,
+            )
+        )
+
+    return LeagueUpcomingDiscovery(
+        discovery_run_id="2026-10-18T10-00-00_KST",
+        status="completed",
+        completed_at=completed_at,
+        target_date=date(2026, 10, 18),
+        target=_discovery_target("225", "mlb"),
+        capture_metadata_file_path="metadata.json",
+        events=events,
+        failure=None,
+    )
+
+
+def _latest_discoveries(
+    selected: list[LoadedLeagueDiscovery],
+    *,
+    fallbacks: list[LeagueDiscoveryFallback] | None = None,
+) -> LatestLeagueDiscoveries:
+    return LatestLeagueDiscoveries(
+        selected=selected,
+        fallbacks=fallbacks or [],
+        unavailable=[],
+        load_failures=[],
+    )
+
+
+def test_upcoming_candidates_prints_events_from_saved_discoveries(monkeypatch) -> None:
+    now = datetime(2026, 10, 18, 1, tzinfo=UTC)
+    path = Path("data/discoveries/mlb.json")
+    loaded = LoadedLeagueDiscovery(
+        file_path=path,
+        discovery=_candidate_discovery(completed_at=now - timedelta(minutes=1)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda: [path],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([loaded]),
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "upcoming-candidates",
+            "--within-minutes",
+            "10",
+            "--sport-code",
+            "baseball",
+            "--league-labels",
+            "mlb",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "후보 경기: 1개" in result.output
+    assert "이벤트 ID: EVENT-A" in result.output
+    assert "Home vs Away" in result.output
+    assert "남은 시간: 5분 0초" in result.output
+    assert "BETS Upcoming API를 호출합니다" not in result.output
+
+
+def test_upcoming_candidates_returns_zero_when_no_event_is_in_window(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 10, 18, 1, tzinfo=UTC)
+    path = Path("data/discoveries/mlb.json")
+    loaded = LoadedLeagueDiscovery(
+        file_path=path,
+        discovery=_candidate_discovery(
+            completed_at=now - timedelta(minutes=1),
+            event_id=None,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda: [path],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([loaded]),
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+
+    result = CliRunner().invoke(cli.app, ["upcoming-candidates"])
+
+    assert result.exit_code == 0
+    assert "후보 경기: 0개" in result.output
+
+
+def test_upcoming_candidates_exits_with_one_without_usable_discovery(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        list,
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([]),
+    )
+
+    result = CliRunner().invoke(cli.app, ["upcoming-candidates"])
+
+    assert result.exit_code == 1
+    assert "사용 가능한 리그 Discovery가 없습니다." in result.output
+
+
+def test_upcoming_candidates_rejects_empty_league_label_filter() -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        ["upcoming-candidates", "--league-labels", "mlb,"],
+    )
+
+    assert result.exit_code == 2
+    assert "후보 조회 필터가 올바르지 않습니다." in result.output

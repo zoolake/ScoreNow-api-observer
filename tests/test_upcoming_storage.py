@@ -11,6 +11,8 @@ from scorenow_api_observer.upcoming.models import (
     UpcomingRequestQuery,
 )
 from scorenow_api_observer.upcoming.storage import (
+    find_league_upcoming_discovery_paths,
+    load_league_upcoming_discovery,
     save_league_upcoming_discovery,
     save_upcoming_capture_metadata,
     save_upcoming_discovery_run,
@@ -157,3 +159,28 @@ def test_save_upcoming_discovery_run_does_not_duplicate_events(
         == discovery_run
     )
     assert "events" not in saved_path.read_text(encoding="utf-8")
+
+
+def test_find_and_load_league_upcoming_discoveries(tmp_path: Path) -> None:
+    discovery = LeagueUpcomingDiscovery(
+        discovery_run_id="2026-10-17T01-00-00_KST",
+        status="completed",
+        completed_at=datetime(2026, 10, 16, 16, 1, tzinfo=UTC),
+        target_date=date(2026, 10, 16),
+        target=_target(),
+        capture_metadata_file_path="data/metadata/capture.json",
+        events=[],
+        failure=None,
+    )
+    expected_path = save_league_upcoming_discovery(
+        discovery,
+        base_directory=tmp_path,
+    )
+    unrelated_path = tmp_path / "2026-10-16" / "runs" / "run.json"
+    unrelated_path.parent.mkdir(parents=True)
+    unrelated_path.write_text("{}", encoding="utf-8")
+
+    result = find_league_upcoming_discovery_paths(tmp_path)
+
+    assert result == [expected_path]
+    assert load_league_upcoming_discovery(expected_path) == discovery

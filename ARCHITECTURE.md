@@ -13,6 +13,7 @@
 ```text
 CLI
 ├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
+├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
 ├── compare           ── 저장된 특정 이벤트의 최근 응답 2개 비교
@@ -66,6 +67,30 @@ Upcoming 원문과 CaptureMetadata는 KST 호출 날짜·파일명을 사용하�
 `captured_at`은 UTC를 유지합니다. 리그별 Discovery와 실행 Run은 API에 전달한 UTC
 `target_date`별로 저장하며 경기 예정 시각은 UTC와 KST를 모두 제공합니다. Run에는
 이벤트를 중복 저장하지 않고 리그별 Discovery 경로만 기록합니다.
+
+## `upcoming-candidates` 호출 트리
+
+```text
+cli.upcoming_candidates(within_minutes, sport_code, league_labels)
+├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.resolve_latest_league_discoveries(...)
+│   ├── 파일마다 upcoming.storage.load_league_upcoming_discovery(...)
+│   ├── 읽기·검증 실패를 모으고 나머지 파일 계속 처리
+│   └── (target_date, sport_id, league_id)마다
+│       ├── 최신 completed 또는 partial 선택
+│       ├── 최신 시도가 failed이면 이전 사용 가능 결과로 fallback
+│       └── 사용 가능 결과가 없으면 unavailable로 분류
+├── upcoming.candidates.select_upcoming_candidates(...)
+│   ├── 종목·리그 필터 적용
+│   ├── now <= scheduled_at_utc <= now + N분 범위 적용
+│   ├── 이벤트 ID 중복 제거
+│   └── 예정 시각·이벤트 ID 순으로 정렬
+└── 후보와 Discovery 경고 출력
+```
+
+이 명령은 저장 자료만 읽으며 API 설정이나 토큰을 사용하지 않습니다. 일부 Discovery
+파일을 읽지 못하거나 특정 리그에 사용 가능한 결과가 없어도 다른 리그의 후보 계산은
+계속합니다. 사용할 수 있는 Discovery 자체가 하나도 없는 경우에만 종료 코드 `1`입니다.
 
 ## `collect` 호출 트리
 
@@ -280,9 +305,10 @@ data/
 | `event_view/request.py` | `parse_requested_event_ids` | 쉼표 입력 정규화와 최대 10개 검증 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events` | BETS API HTTP 호출 |
 | `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets` | Upcoming 설정 로드·검증과 리그 선택 |
+| `upcoming/candidates.py` | `resolve_latest_league_discoveries`, `select_upcoming_candidates` | 최신 사용 가능 Discovery 선택과 시간 범위 후보 계산 |
 | `upcoming/response.py` | `analyze_upcoming_response` | Upcoming 이벤트·이슈·페이징 분석 |
 | `upcoming/discovery.py` | `discover_upcoming_events`, `capture_upcoming_target` | 대상별 부분 실패 수집과 리그·Run Discovery 생성 |
-| `upcoming/storage.py` | `save_upcoming_*`, `save_league_*` | Upcoming 원문·메타데이터·Discovery 저장 |
+| `upcoming/storage.py` | `save_upcoming_*`, `save_league_*`, `find_*`, `load_*` | Upcoming 원문·메타데이터·Discovery 저장·탐색·로드 |
 | `upcoming/models.py` | `UpcomingCaptureMetadata`, `LeagueUpcomingDiscovery`, `UpcomingDiscoveryRun` 등 | Upcoming 영속 데이터 모델 |
 | `event_view/collector.py` | `capture_event_view`, `CaptureResult` | 원문·Metadata·Observation 생성 및 저장 |
 | `event_view/response.py` | `analyze_event_view_response` | 반환 ID, 이슈, 관측 가능 이벤트 분석 |

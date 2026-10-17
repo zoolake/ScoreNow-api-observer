@@ -81,7 +81,25 @@ uv run observer discover-upcoming --target-date 2026-10-16
 최대 10개까지 전달할 수 있습니다. 아래 명령의 `BETS_EVENT_ID_1`,
 `BETS_EVENT_ID_2`는 실제로 확인한 값으로 교체합니다.
 
-### 6. 첫 응답 수집
+### 6. 곧 시작하는 경기 후보 확인
+
+저장된 리그별 Discovery 중 최신 사용 가능 결과를 기준으로 현재부터 10분 이내
+시작하는 경기를 확인합니다. 이 명령은 API를 호출하지 않습니다.
+
+```bash
+uv run observer upcoming-candidates --within-minutes 10
+```
+
+특정 종목이나 리그만 확인할 수도 있습니다.
+
+```bash
+uv run observer upcoming-candidates \
+  --within-minutes 10 \
+  --sport-code baseball \
+  --league-labels kbo,mlb
+```
+
+### 7. 첫 응답 수집
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1
@@ -100,7 +118,7 @@ data/raw/event-view/YYYY-MM-DD/...
 data/metadata/event-view/YYYY-MM-DD/...
 ```
 
-### 7. 반복 수집 및 구조 변화 관찰
+### 8. 반복 수집 및 구조 변화 관찰
 
 다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
@@ -119,7 +137,7 @@ uv run observer watch \
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
-### 8. 저장된 최근 응답 비교
+### 9. 저장된 최근 응답 비교
 
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
@@ -127,7 +145,7 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
-### 9. 저장된 자료의 Markdown 보고서 생성
+### 10. 저장된 자료의 Markdown 보고서 생성
 
 ```bash
 uv run observer report
@@ -170,6 +188,35 @@ uv run observer discover-upcoming --target-date 2026-10-16
 - 설정 또는 날짜 입력 오류는 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
 - 페이징 호출은 수행하지 않습니다. 응답의 `pager.total`이 현재 `results` 개수보다
   크면 `pagination_required` 이슈와 `partial` 상태로 기록합니다.
+
+### `observer upcoming-candidates`
+
+저장된 리그별 Discovery를 읽어 현재부터 지정한 시간 안에 시작하는 경기 후보를
+출력합니다. BETS API나 API 토큰을 사용하지 않으며 파일도 새로 저장하지 않습니다.
+
+```bash
+uv run observer upcoming-candidates --within-minutes 10
+```
+
+- `--within-minutes`: 현재부터 후보로 포함할 분 단위 범위입니다. 기본값은 `10`이며
+  최소값은 `1`입니다. 현재 시각과 정확히 범위의 마지막 시각도 포함합니다.
+- `--sport-code`: 특정 내부 종목 코드만 조회합니다. 생략하면 전체 종목을 대상으로
+  합니다.
+- `--league-labels`: 리그 label을 쉼표로 구분해 필터링합니다. 생략하면 전체 리그를
+  대상으로 합니다.
+- Discovery는 `(target_date, sport_id, league_id)`별로 구분합니다. 각 그룹의 최신
+  `completed` 또는 `partial` 결과를 사용합니다.
+- 가장 최신 시도가 `failed`이면 이전의 최신 사용 가능 결과를 사용하고 경고합니다.
+  최신 사용 가능 결과가 `partial`인 경우도 경고합니다.
+- 읽지 못한 파일이나 사용 가능한 결과가 없는 리그가 있어도 다른 리그의 후보 조회는
+  계속합니다.
+- 같은 이벤트 ID가 여러 Discovery에 있으면 가장 최근에 완료된 Discovery의 값을
+  사용해 한 번만 출력하고 중복 사실을 알립니다.
+- 후보마다 이벤트 ID, 종목·리그, 대진, UTC·KST 시작 시각, 남은 시간, 사용한
+  Discovery 상태·완료 시각·파일 경로를 출력합니다.
+- 사용 가능한 Discovery는 있지만 범위 안의 경기가 없으면 후보 `0개`와 종료 코드
+  `0`을 반환합니다. 사용할 수 있는 Discovery가 전혀 없으면 종료 코드 `1`, 잘못된
+  필터나 시간 범위는 종료 코드 `2`입니다.
 
 ### `observer collect`
 
