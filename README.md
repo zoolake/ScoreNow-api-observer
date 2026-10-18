@@ -99,7 +99,25 @@ uv run observer upcoming-candidates \
   --league-labels kbo,mlb
 ```
 
-### 7. 첫 응답 수집
+### 7. 곧 시작하는 경기 자동 반복 수집
+
+저장된 Discovery에서 현재부터 10분 이내 시작하는 경기를 자동으로 선택해 Event View
+API를 반복 수집합니다. 후보가 10개를 초과하면 최대 10개씩 여러 요청으로 나눕니다.
+
+```bash
+uv run observer watch-upcoming \
+  --within-minutes 10 \
+  --sport-code baseball \
+  --league-labels kbo,mlb \
+  --interval 30 \
+  --count 3
+```
+
+`--count`는 개별 API 호출 횟수가 아니라 선택한 후보 전체를 수집하는 주기 횟수입니다.
+후보가 11개라면 한 주기에 Event View API를 2회 호출하며, `--count 3`이면 총 6회
+호출합니다. 이 명령은 Upcoming API를 다시 호출하지 않습니다.
+
+### 8. 첫 응답 수집
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1
@@ -118,7 +136,7 @@ data/raw/event-view/YYYY-MM-DD/...
 data/metadata/event-view/YYYY-MM-DD/...
 ```
 
-### 8. 반복 수집 및 구조 변화 관찰
+### 9. 반복 수집 및 구조 변화 관찰
 
 다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
@@ -137,7 +155,7 @@ uv run observer watch \
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
-### 9. 저장된 최근 응답 비교
+### 10. 저장된 최근 응답 비교
 
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
@@ -145,7 +163,7 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
-### 10. 저장된 자료의 Markdown 보고서 생성
+### 11. 저장된 자료의 Markdown 보고서 생성
 
 ```bash
 uv run observer report
@@ -217,6 +235,41 @@ uv run observer upcoming-candidates --within-minutes 10
 - 사용 가능한 Discovery는 있지만 범위 안의 경기가 없으면 후보 `0개`와 종료 코드
   `0`을 반환합니다. 사용할 수 있는 Discovery가 전혀 없으면 종료 코드 `1`, 잘못된
   필터나 시간 범위는 종료 코드 `2`입니다.
+
+### `observer watch-upcoming`
+
+`upcoming-candidates`와 동일한 기준으로 저장된 Discovery에서 곧 시작할 경기를 선택한
+뒤 Event View API를 반복 호출합니다. Upcoming API는 호출하지 않습니다.
+
+```bash
+uv run observer watch-upcoming \
+  --within-minutes 10 \
+  --sport-code baseball \
+  --league-labels kbo,mlb \
+  --interval 30 \
+  --count 10
+```
+
+- `--within-minutes`: 현재부터 수집 대상으로 포함할 분 단위 범위입니다. 기본값은
+  `10`이며 최소값은 `1`입니다.
+- `--sport-code`, `--league-labels`: `upcoming-candidates`와 동일한 선택 필터입니다.
+- `--interval`, `-i`: 후보 전체를 한 번 수집한 뒤 다음 수집 주기까지 기다릴
+  시간입니다. 기본값은 `30`초이며 최소값은 `1`초입니다.
+- `--count`, `-c`: 후보 전체를 반복 수집할 주기 횟수입니다. 생략하면 `Ctrl+C`로
+  중단할 때까지 계속 수집합니다.
+- 후보는 명령 시작 시 한 번 확정합니다. 실행 중 새 Discovery가 저장되거나 예정
+  경기가 추가되어도 현재 실행의 수집 대상은 바뀌지 않습니다.
+- 후보 순서를 유지하면서 최대 10개씩 Event View 요청 배치로 나눕니다. 예를 들어
+  후보 23개는 한 수집 주기마다 3번의 API 호출이 발생합니다.
+- 배치 사이에는 기다리지 않고, 한 수집 주기의 모든 배치 처리가 끝난 뒤에만
+  `--interval`만큼 기다립니다.
+- 개별 배치의 연결·저장 실패는 출력하고 나머지 배치와 다음 수집 주기를 계속합니다.
+  성공한 Capture는 일반 `watch`와 같은 원문·메타데이터·Observation·구조 변화
+  기록으로 저장합니다.
+- 사용 가능한 Discovery는 있지만 후보가 없으면 API 설정을 읽거나 API를 호출하지
+  않고 종료 코드 `0`으로 끝납니다. 사용할 수 있는 Discovery가 전혀 없으면 종료
+  코드 `1`, 잘못된 필터나 API 설정은 종료 코드 `2`입니다.
+- 경기 종료를 해석해 이벤트별 수집을 자동 중단하는 기능은 포함하지 않습니다.
 
 ### `observer collect`
 

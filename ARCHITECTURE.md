@@ -14,6 +14,7 @@
 CLI
 ├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
 ├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
+├── watch-upcoming ── 곧 시작할 경기를 자동 선택해 Event View 반복 수집
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
 ├── compare           ── 저장된 특정 이벤트의 최근 응답 2개 비교
@@ -23,10 +24,12 @@ CLI
 └── 저장 파일 탐색 → 부분 성공 로드 → 이벤트 해석 → 보고서용 집계
 ```
 
-`collect`와 `watch`는 하나의 공통 수집 함수인 `capture_event_view()`를 사용합니다.
-`compare`와 `watch`의 구조 비교는 `compare_observations()`로 합쳐집니다. `report`는
-저장된 자료만 사용하는 오프라인 명령이며 API 설정을 읽지 않습니다. 기능별 코드는
-`event_view`, `upcoming`, `reporting` 하위 패키지로 분리되어 있습니다.
+`collect`, `watch`, `watch-upcoming`은 하나의 공통 수집 함수인
+`capture_event_view()`를 사용합니다. 두 watch 명령은 `_run_event_view_watch()`로 반복
+제어와 부분 실패 처리를 공유합니다. `compare`와 watch의 구조 비교는
+`compare_observations()`로 합쳐집니다. `report`는 저장된 자료만 사용하는 오프라인
+명령이며 API 설정을 읽지 않습니다. 기능별 코드는 `event_view`, `upcoming`,
+`reporting` 하위 패키지로 분리되어 있습니다.
 
 ## `discover-upcoming` 호출 트리
 
@@ -92,6 +95,37 @@ cli.upcoming_candidates(within_minutes, sport_code, league_labels)
 파일을 읽지 못하거나 특정 리그에 사용 가능한 결과가 없어도 다른 리그의 후보 계산은
 계속합니다. 사용할 수 있는 Discovery 자체가 하나도 없는 경우에만 종료 코드 `1`입니다.
 
+## `watch-upcoming` 호출 트리
+
+```text
+cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, count)
+├── upcoming.candidates.normalize_candidate_sport_code(...)
+├── upcoming.candidates.parse_candidate_league_labels(...)
+├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.resolve_latest_league_discoveries(...)
+│   └── upcoming-candidates와 같은 최신 결과·fallback 규칙 사용
+├── upcoming.candidates.select_upcoming_candidates(...)
+│   ├── 명령 시작 시각을 기준으로 후보 한 번 확정
+│   └── 예정 시각·이벤트 ID 순으로 정렬된 고유 이벤트 반환
+├── event_view.request.build_event_view_request_batches(...)
+│   └── 후보 순서를 유지하며 최대 10개씩 요청 배치 생성
+├── 후보가 있을 때만 settings.Settings()
+└── cli._run_event_view_watch(request_batches, interval, count)
+    ├── 후보 전체 배치를 한 수집 주기로 반복
+    ├── 각 배치마다 cli._capture_event_view_watch_batch(...)
+    │   ├── event_view.collector.capture_event_view(...)
+    │   ├── Capture·Observation 저장 결과 출력
+    │   └── Observation마다 cli._compare_and_save_structure_change(...)
+    └── 전체 배치가 끝난 뒤 다음 주기 전까지 interval만큼 대기
+```
+
+이 명령은 Upcoming API를 호출하지 않고 저장된 Discovery만 후보 선정에 사용합니다.
+후보 목록은 시작할 때 한 번 확정하므로 실행 중 Discovery 변경은 반영하지 않습니다.
+사용 가능한 Discovery가 있지만 후보가 없으면 API 설정도 읽지 않고 정상 종료합니다.
+개별 Event View 배치가 실패해도 같은 주기의 다음 배치와 이후 수집 주기를 계속합니다.
+저장 결과는 일반 `watch`와 같은 Event View 원문·CaptureMetadata·EventObservation·
+StructureChangeRecord이므로 별도의 `watch-upcoming` 저장 형식은 없습니다.
+
 ## `collect` 호출 트리
 
 ```text
@@ -131,13 +165,15 @@ cli.collect(event_ids)
 cli.watch(event_ids, interval_seconds, count)
 ├── cli._parse_requested_event_ids_or_exit(event_ids)
 ├── settings.Settings()
-└── 반복
-    ├── event_view.collector.capture_event_view(...)
-    │   └── collect와 동일한 공통 수집 흐름
-    ├── cli._print_capture_summary(result)
-    ├── cli._print_observation_save_failures(result)
-    └── 생성된 EventObservation마다
-        └── cli._compare_and_save_structure_change(current_observation)
+└── cli._run_event_view_watch(request_batches=[requested_event_ids], ...)
+    └── 배치가 하나인 공통 watch 실행기
+        ├── cli._capture_event_view_watch_batch(...)
+        │   ├── event_view.collector.capture_event_view(...)
+        │   │   └── collect와 동일한 공통 수집 흐름
+        │   ├── cli._print_capture_summary(result)
+        │   └── cli._print_observation_save_failures(result)
+        └── 생성된 EventObservation마다
+            └── cli._compare_and_save_structure_change(current_observation)
             ├── event_view.comparison.compare_with_previous_observation(...)
             │   ├── event_view.storage.load_capture_metadata(current metadata)
             │   ├── event_view.comparison.find_previous_observation(...)
@@ -301,8 +337,8 @@ data/
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `collect`, `watch`, `compare`, `report` | 명령 조합과 사용자 출력 |
-| `event_view/request.py` | `parse_requested_event_ids` | 쉼표 입력 정규화와 최대 10개 검증 |
+| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect`, `watch`, `compare`, `report` | 명령 조합과 사용자 출력 |
+| `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events` | BETS API HTTP 호출 |
 | `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets` | Upcoming 설정 로드·검증과 리그 선택 |
 | `upcoming/candidates.py` | `resolve_latest_league_discoveries`, `select_upcoming_candidates` | 최신 사용 가능 Discovery 선택과 시간 범위 후보 계산 |

@@ -25,3 +25,12 @@ def parse_requested_event_ids(value: str) -> list[str]:
         )
 
     return sorted(event_id_set)
+
+
+def build_event_view_request_batches(event_ids: list[str]) -> list[list[str]]:
+    """이벤트 ID 순서를 유지하며 Event View 요청 최대 크기로 나눕니다."""
+
+    return [
+        list(event_ids[start_index : start_index + MAX_EVENT_IDS_PER_REQUEST])
+        for start_index in range(0, len(event_ids), MAX_EVENT_IDS_PER_REQUEST)
+    ]

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import httpx
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
@@ -260,6 +261,26 @@ def _candidate_discovery(
     )
 
 
+def _candidate_event(
+    *,
+    event_id: str,
+    scheduled_at: datetime,
+) -> DiscoveredUpcomingEvent:
+    return DiscoveredUpcomingEvent(
+        event_id=event_id,
+        sport_id="16",
+        sport_code="baseball",
+        time_status="0",
+        scheduled_at_utc=scheduled_at,
+        scheduled_at_kst=scheduled_at.astimezone(KST),
+        league=UpcomingLeague(id="225", name="MLB", country_code="us"),
+        home=UpcomingParticipant(id="H", name="Home"),
+        away=UpcomingParticipant(id="A", name="Away"),
+        source_capture_metadata_file_path="metadata.json",
+        result_index=0,
+    )
+
+
 def _latest_discoveries(
     selected: list[LoadedLeagueDiscovery],
     *,
@@ -371,3 +392,172 @@ def test_upcoming_candidates_rejects_empty_league_label_filter() -> None:
 
     assert result.exit_code == 2
     assert "후보 조회 필터가 올바르지 않습니다." in result.output
+
+
+def test_watch_upcoming_batches_candidates_and_waits_between_cycles(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 10, 18, 1, tzinfo=UTC)
+    path = Path("data/discoveries/mlb.json")
+    event_ids = [f"EVENT-{index:02}" for index in range(11)]
+    discovery = _candidate_discovery(
+        completed_at=now - timedelta(minutes=1),
+        event_id=None,
+    ).model_copy(
+        update={
+            "events": [
+                _candidate_event(
+                    event_id=event_id,
+                    scheduled_at=now + timedelta(minutes=5),
+                )
+                for event_id in event_ids
+            ]
+        }
+    )
+    loaded = LoadedLeagueDiscovery(file_path=path, discovery=discovery)
+    captured_batches: list[list[str]] = []
+    sleep_calls: list[float] = []
+
+    def capture_event_view(**kwargs):
+        captured_batches.append(kwargs["requested_event_ids"])
+        return SimpleNamespace(
+            response=httpx.Response(200),
+            raw_file_path=Path("data/raw/capture.json"),
+            metadata_file_path=Path("data/metadata/capture.json"),
+            observation_save_failures=[],
+            event_observations=[],
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda: [path],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([loaded]),
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+    monkeypatch.setattr(cli.time, "sleep", sleep_calls.append)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "watch-upcoming",
+            "--within-minutes",
+            "10",
+            "--interval",
+            "7",
+            "--count",
+            "2",
+        ],
+    )
+
+    expected_batches = [event_ids[:10], event_ids[10:]]
+    assert result.exit_code == 0
+    assert captured_batches == [*expected_batches, *expected_batches]
+    assert sleep_calls == [7]
+    assert "수집 후보 경기: 11개" in result.output
+    assert "Event View 요청 배치: 2개" in result.output
+    assert "수집 주기: 2회" in result.output
+    assert "API 호출: 4회 / 저장: 4개" in result.output
+
+
+def test_watch_upcoming_returns_without_api_settings_when_no_candidate(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 10, 18, 1, tzinfo=UTC)
+    path = Path("data/discoveries/mlb.json")
+    loaded = LoadedLeagueDiscovery(
+        file_path=path,
+        discovery=_candidate_discovery(
+            completed_at=now - timedelta(minutes=1),
+            event_id=None,
+        ),
+    )
+
+    def fail_to_load_settings():
+        raise AssertionError("후보가 없으면 API 설정을 읽으면 안 됩니다.")
+
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda: [path],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([loaded]),
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "Settings", fail_to_load_settings)
+
+    result = CliRunner().invoke(cli.app, ["watch-upcoming", "--count", "1"])
+
+    assert result.exit_code == 0
+    assert "수집 후보 경기: 0개" in result.output
+    assert "현재 수집할 예정 경기 후보가 없습니다." in result.output
+
+
+def test_watch_upcoming_continues_with_next_batch_after_storage_failure(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 10, 18, 1, tzinfo=UTC)
+    path = Path("data/discoveries/mlb.json")
+    event_ids = [f"EVENT-{index:02}" for index in range(11)]
+    discovery = _candidate_discovery(
+        completed_at=now - timedelta(minutes=1),
+        event_id=None,
+    ).model_copy(
+        update={
+            "events": [
+                _candidate_event(
+                    event_id=event_id,
+                    scheduled_at=now + timedelta(minutes=5),
+                )
+                for event_id in event_ids
+            ]
+        }
+    )
+    loaded = LoadedLeagueDiscovery(file_path=path, discovery=discovery)
+    captured_batches: list[list[str]] = []
+
+    def capture_event_view(**kwargs):
+        requested_event_ids = kwargs["requested_event_ids"]
+        captured_batches.append(requested_event_ids)
+        if len(captured_batches) == 1:
+            raise OSError("disk full")
+        return SimpleNamespace(
+            response=httpx.Response(200),
+            raw_file_path=Path("data/raw/capture.json"),
+            metadata_file_path=Path("data/metadata/capture.json"),
+            observation_save_failures=[],
+            event_observations=[],
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda: [path],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_latest_league_discoveries",
+        lambda _paths: _latest_discoveries([loaded]),
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch-upcoming", "--count", "1"],
+    )
+
+    assert result.exit_code == 0
+    assert captured_batches == [event_ids[:10], event_ids[10:]]
+    assert "파일 저장에 실패했습니다." in result.output
+    assert "API 호출: 2회 / 저장: 1개" in result.output
