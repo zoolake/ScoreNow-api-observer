@@ -36,6 +36,9 @@ from scorenow_api_observer.reporting.field_inspection import (
     FieldValueChange,
     FieldValueTimeline,
 )
+from scorenow_api_observer.reporting.tracked_field_config import (
+    TrackedFieldsConfig,
+)
 
 
 class _FakeSettings:
@@ -573,7 +576,13 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         ],
         sport_field_summaries=[],
     )
-    analyzed_arguments: list[tuple[list[Path], list[Path], dict[str, str]]] = []
+    tracked_field_paths = {
+        "baseball": ("$.time_status",),
+        "football": ("$.timer.md", "$.time_status"),
+    }
+    analyzed_arguments: list[
+        tuple[list[Path], list[Path], dict[str, str], dict[str, tuple[str, ...]]]
+    ] = []
     rendered_sports: list[tuple[str | None, datetime]] = []
     built_report_names: list[str] = []
     saved_reports: list[tuple[str, Path]] = []
@@ -589,9 +598,15 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         metadata_file_paths: list[Path],
         observation_file_paths: list[Path],
         sport_code_by_id: dict[str, str],
+        tracked_field_paths_by_sport_code: dict[str, tuple[str, ...]],
     ) -> EventViewReportAnalysis:
         analyzed_arguments.append(
-            (metadata_file_paths, observation_file_paths, sport_code_by_id)
+            (
+                metadata_file_paths,
+                observation_file_paths,
+                sport_code_by_id,
+                tracked_field_paths_by_sport_code,
+            )
         )
         return analysis
 
@@ -623,6 +638,11 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
     monkeypatch.setattr(cli, "find_capture_metadata_paths", lambda: metadata_paths)
     monkeypatch.setattr(cli, "find_event_observation_paths", lambda: observation_paths)
     monkeypatch.setattr(cli, "load_sport_codes_by_id", lambda: sport_code_by_id)
+    monkeypatch.setattr(
+        cli,
+        "load_tracked_fields_config",
+        lambda: TrackedFieldsConfig(paths_by_sport_code=tracked_field_paths),
+    )
     monkeypatch.setattr(cli, "analyze_event_view_report", analyze_report)
     monkeypatch.setattr(
         cli,
@@ -636,7 +656,9 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
     result = CliRunner().invoke(cli.app, ["report"])
 
     assert result.exit_code == 0
-    assert analyzed_arguments == [(metadata_paths, observation_paths, sport_code_by_id)]
+    assert analyzed_arguments == [
+        (metadata_paths, observation_paths, sport_code_by_id, tracked_field_paths)
+    ]
     assert rendered_sports == [
         ("baseball", generated_at),
         ("football", generated_at),
@@ -682,6 +704,11 @@ def test_report_rejects_safe_file_name_collision_before_saving(
         return Path("unused")
 
     monkeypatch.setattr(cli, "load_sport_codes_by_id", dict)
+    monkeypatch.setattr(
+        cli,
+        "load_tracked_fields_config",
+        lambda: TrackedFieldsConfig(paths_by_sport_code={}),
+    )
     monkeypatch.setattr(cli, "find_capture_metadata_paths", list)
     monkeypatch.setattr(cli, "find_event_observation_paths", list)
     monkeypatch.setattr(cli, "analyze_event_view_report", lambda **_kwargs: analysis)
@@ -721,6 +748,25 @@ def test_report_exits_when_sport_config_cannot_be_loaded(
 
     assert result.exit_code == 1
     assert "보고서 생성에 실패했습니다. config missing" in result.output
+
+
+def test_report_exits_when_tracked_fields_config_cannot_be_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_load_tracked_fields_config() -> TrackedFieldsConfig:
+        raise ValueError("tracked fields invalid")
+
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", dict)
+    monkeypatch.setattr(
+        cli,
+        "load_tracked_fields_config",
+        fail_to_load_tracked_fields_config,
+    )
+
+    result = CliRunner().invoke(cli.app, ["report"])
+
+    assert result.exit_code == 1
+    assert "보고서 생성에 실패했습니다. tracked fields invalid" in result.output
 
 
 def test_inspect_field_creates_report_from_stored_observations_offline(

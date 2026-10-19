@@ -1,0 +1,9 @@
+sports:
+  football:
+    - $.timer.md
+    - $.time_status
+    - $.has_lineup
+
+  baseball:
+    - $.time_status
+    - $.has_lineup

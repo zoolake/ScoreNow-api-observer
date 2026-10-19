@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, get_args, get_type_hints
+from typing import Any, cast, get_args, get_type_hints
 
 from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
 from scorenow_api_observer.event_view.observation import extract_observed_event
@@ -11,8 +12,19 @@ from scorenow_api_observer.event_view.storage import (
     load_event_observation,
     load_json_file,
 )
-from scorenow_api_observer.json_structure import extract_json_structure
+from scorenow_api_observer.json_structure import (
+    extract_json_structure,
+    get_json_type_name,
+)
+from scorenow_api_observer.reporting.field_path import (
+    JsonScalar,
+    UnsupportedArrayFieldValueError,
+    resolve_json_field,
+    validate_field_path,
+)
 from scorenow_api_observer.sport_classification import classify_event_sport
+
+type TrackedValueKey = tuple[bool, str, JsonScalar]
 
 
 @dataclass(frozen=True)
@@ -162,6 +174,58 @@ class SportFieldSummary:
 
 
 @dataclass(frozen=True)
+class TrackedFieldValueSummary:
+    """추적 필드에서 관측한 단일 값 하나의 집계입니다.
+
+    Attributes:
+        value_type: JSON 자료형입니다. 필드 누락은 missing으로 표현합니다.
+        present: 필드가 응답에 존재했는지 나타냅니다.
+        value: 실제 JSON 단일 값입니다. present가 False이면 사용하지 않습니다.
+        observation_count: 해당 상태가 관측된 Observation 수입니다.
+        unique_event_count: 해당 상태가 한 번 이상 관측된 고유 이벤트 수입니다.
+    """
+
+    value_type: str
+    present: bool
+    value: JsonScalar
+    observation_count: int
+    unique_event_count: int
+
+
+@dataclass(frozen=True)
+class TrackedFieldUnsupportedTypeSummary:
+    """단일 값이 아니어서 추적 필드 값 집계에서 제외한 자료형 현황입니다.
+
+    Attributes:
+        value_type: 집계에서 제외한 JSON 자료형입니다.
+        observation_count: 해당 자료형이 관측된 Observation 수입니다.
+        unique_event_count: 해당 자료형이 한 번 이상 관측된 고유 이벤트 수입니다.
+    """
+
+    value_type: str
+    observation_count: int
+    unique_event_count: int
+
+
+@dataclass(frozen=True)
+class SportTrackedFieldSummary:
+    """종목 하나의 설정된 JSON 경로에서 관측한 값과 제외 현황입니다.
+
+    Attributes:
+        sport_code: 값 집계 설정이 적용된 내부 종목 코드입니다.
+        path: 값을 집계한 JSON 객체 경로입니다.
+        value_summaries: 필드 누락을 포함한 단일 값별 집계입니다.
+        unsupported_type_summaries: 객체·배열이라 값 집계에서 제외한 자료형별
+            현황입니다.
+    """
+
+    sport_code: str
+    path: str
+    value_summaries: list[TrackedFieldValueSummary]
+    unsupported_type_summaries: list[TrackedFieldUnsupportedTypeSummary]
+
+
+@dataclass(frozen=True)
 class EventViewReportAnalysis:
     """저장된 Event View 자료를 보고서용으로 집계한 결과입니다.
 
@@ -173,6 +237,8 @@ class EventViewReportAnalysis:
         response_issue_summaries: 응답 이슈 코드별 발생 현황입니다.
         sport_observation_summaries: 종목별 Observation 및 고유 이벤트 집계입니다.
         sport_field_summaries: 종목·JSON 경로별 자료형과 필드 제공 현황입니다.
+        sport_tracked_field_summaries: 설정된 종목·JSON 경로별 값과 집계 제외
+            자료형 현황입니다.
         capture_metadata_load_failures: 읽지 못한 CaptureMetadata 파일 기록입니다.
         observed_event_resolution_failures: 해석하지 못한 EventObservation 파일
             기록입니다.
@@ -184,6 +250,9 @@ class EventViewReportAnalysis:
     capture_metadata_load_failures: list[CaptureMetadataLoadFailure]
     observed_event_resolution_failures: list[ObservedEventResolutionFailure]
     sport_field_summaries: list[SportFieldSummary]
+    sport_tracked_field_summaries: list[SportTrackedFieldSummary] = field(
+        default_factory=list
+    )
 
 
 def resolve_observed_event(
@@ -406,6 +475,7 @@ def analyze_event_view_report(
     metadata_file_paths: list[Path],
     observation_file_paths: list[Path],
     sport_code_by_id: dict[str, str],
+    tracked_field_paths_by_sport_code: dict[str, tuple[str, ...]] | None = None,
 ) -> EventViewReportAnalysis:
     """저장된 Event View 자료를 읽어 보고서용 분석 결과를 만듭니다.
 
@@ -433,6 +503,10 @@ def analyze_event_view_report(
     sport_field_summaries = summarize_sport_fields(
         observed_events=observed_event_resolution_result.observed_events
     )
+    sport_tracked_field_summaries = summarize_tracked_field_values(
+        observed_events=observed_event_resolution_result.observed_events,
+        paths_by_sport_code=tracked_field_paths_by_sport_code or {},
+    )
 
     return EventViewReportAnalysis(
         response_analysis_status_summaries=status_summaries,
@@ -441,6 +515,7 @@ def analyze_event_view_report(
         capture_metadata_load_failures=capture_metadata_load_result.failures,
         observed_event_resolution_failures=(observed_event_resolution_result.failures),
         sport_field_summaries=sport_field_summaries,
+        sport_tracked_field_summaries=sport_tracked_field_summaries,
     )
 
 
@@ -535,3 +610,152 @@ def summarize_sport_fields(
         )
     )
     return result
+
+
+def summarize_tracked_field_values(
+    *,
+    observed_events: list[ObservedEvent],
+    paths_by_sport_code: dict[str, tuple[str, ...]],
+) -> list[SportTrackedFieldSummary]:
+    """설정된 단일 값 JSON 경로의 상태를 종목별로 집계합니다.
+
+    문자열·숫자·boolean·null과 필드 누락을 서로 다른 상태로 집계합니다. 요청
+    경로의 값이 객체나 배열이면 해당 Observation을 값 집계에서 제외하고 자료형별
+    제외 현황에 반영합니다.
+    """
+
+    events_by_sport_code: dict[str, list[ObservedEvent]] = {}
+    for observed_event in observed_events:
+        if observed_event.sport_code is None:
+            continue
+        events_by_sport_code.setdefault(observed_event.sport_code, []).append(
+            observed_event
+        )
+
+    summaries: list[SportTrackedFieldSummary] = []
+    for sport_code, paths in paths_by_sport_code.items():
+        sport_events = events_by_sport_code.get(sport_code, [])
+        for path in paths:
+            path_keys = validate_field_path(path)
+            summaries.append(
+                _summarize_tracked_field(
+                    observed_events=sport_events,
+                    sport_code=sport_code,
+                    path=path,
+                    path_keys=path_keys,
+                )
+            )
+
+    return summaries
+
+
+def _summarize_tracked_field(
+    *,
+    observed_events: list[ObservedEvent],
+    sport_code: str,
+    path: str,
+    path_keys: tuple[str, ...],
+) -> SportTrackedFieldSummary:
+    observation_counts_by_value: dict[TrackedValueKey, int] = {}
+    event_ids_by_value: dict[TrackedValueKey, set[str]] = {}
+    unsupported_observation_counts_by_type: dict[str, int] = {}
+    unsupported_event_ids_by_type: dict[str, set[str]] = {}
+
+    for observed_event in observed_events:
+        try:
+            resolved_field = resolve_json_field(
+                data=observed_event.event_data,
+                path_keys=path_keys,
+            )
+        except UnsupportedArrayFieldValueError:
+            _record_unsupported_tracked_field_value(
+                value_type="array",
+                event_id=observed_event.event_id,
+                observation_counts_by_type=unsupported_observation_counts_by_type,
+                event_ids_by_type=unsupported_event_ids_by_type,
+            )
+            continue
+
+        if not resolved_field.present:
+            value_key: TrackedValueKey = (False, "missing", None)
+        elif isinstance(resolved_field.value, (dict, list)):
+            _record_unsupported_tracked_field_value(
+                value_type=get_json_type_name(resolved_field.value),
+                event_id=observed_event.event_id,
+                observation_counts_by_type=unsupported_observation_counts_by_type,
+                event_ids_by_type=unsupported_event_ids_by_type,
+            )
+            continue
+        else:
+            scalar_value = cast(JsonScalar, resolved_field.value)
+            value_key = (
+                True,
+                get_json_type_name(scalar_value),
+                scalar_value,
+            )
+
+        observation_counts_by_value[value_key] = (
+            observation_counts_by_value.get(value_key, 0) + 1
+        )
+        event_ids_by_value.setdefault(value_key, set()).add(observed_event.event_id)
+
+    value_summaries = [
+        TrackedFieldValueSummary(
+            present=present,
+            value_type=value_type,
+            value=value,
+            observation_count=observation_count,
+            unique_event_count=len(event_ids_by_value[(present, value_type, value)]),
+        )
+        for (present, value_type, value), observation_count in (
+            observation_counts_by_value.items()
+        )
+    ]
+    value_summaries.sort(key=_tracked_field_value_sort_key)
+
+    unsupported_type_summaries = [
+        TrackedFieldUnsupportedTypeSummary(
+            value_type=value_type,
+            observation_count=observation_count,
+            unique_event_count=len(unsupported_event_ids_by_type[value_type]),
+        )
+        for value_type, observation_count in (
+            unsupported_observation_counts_by_type.items()
+        )
+    ]
+    unsupported_type_summaries.sort(key=lambda summary: summary.value_type)
+
+    return SportTrackedFieldSummary(
+        sport_code=sport_code,
+        path=path,
+        value_summaries=value_summaries,
+        unsupported_type_summaries=unsupported_type_summaries,
+    )
+
+
+def _record_unsupported_tracked_field_value(
+    *,
+    value_type: str,
+    event_id: str,
+    observation_counts_by_type: dict[str, int],
+    event_ids_by_type: dict[str, set[str]],
+) -> None:
+    observation_counts_by_type[value_type] = (
+        observation_counts_by_type.get(value_type, 0) + 1
+    )
+    event_ids_by_type.setdefault(value_type, set()).add(event_id)
+
+
+def _tracked_field_value_sort_key(
+    summary: TrackedFieldValueSummary,
+) -> tuple[int, str]:
+    type_order = {
+        "boolean": 0,
+        "integer": 1,
+        "number": 2,
+        "string": 3,
+        "null": 4,
+        "missing": 5,
+    }
+    serialized_value = json.dumps(summary.value, ensure_ascii=False)
+    return (type_order.get(summary.value_type, 99), serialized_value)

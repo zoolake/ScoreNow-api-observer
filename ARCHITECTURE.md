@@ -225,6 +225,10 @@ cli.compare(event_id)
 ```text
 cli.report()
 ├── sport_config.load_sport_codes_by_id(config/betsapi_sports.yaml)
+├── reporting.tracked_field_config.load_tracked_fields_config(...)
+│   ├── config/event_view_tracked_fields.yaml 로드
+│   ├── 등록된 종목 코드·경로·중복 검증
+│   └── reporting.field_path.validate_field_path(...)
 ├── event_view.storage.find_capture_metadata_paths(...)
 ├── event_view.storage.find_event_observation_paths(...)
 ├── reporting.analysis.analyze_event_view_report(...)
@@ -244,6 +248,8 @@ cli.report()
 │   ├── reporting.analysis.summarize_sport_observations(...)
 │   ├── reporting.analysis.summarize_sport_fields(...)
 │   │   └── json_structure.extract_json_structure(event_data)
+│   ├── reporting.analysis.summarize_tracked_field_values(...)
+│   │   └── Observation마다 reporting.field_path.resolve_json_field(...)
 │   └── reporting.analysis.EventViewReportAnalysis(...)
 ├── reporting.markdown.render_endpoint_report_markdown(...)
 │   └── reporting/templates/markdown/event_view_endpoint.md.jinja 렌더링
@@ -266,7 +272,7 @@ CaptureMetadata 또는 EventObservation 파일 하나를 읽거나 해석하지 
 
 ```text
 cli.inspect_field(sport_code, field_path, event_id)
-├── reporting.field_inspection.validate_field_path(...)
+├── reporting.field_path.validate_field_path(...)
 ├── sport_config.load_sport_codes_by_id(...)
 ├── event_view.storage.find_event_observation_paths(...)
 ├── reporting.analysis.resolve_observed_events(...)
@@ -297,6 +303,8 @@ cli.inspect_field(sport_code, field_path, event_id)
 - 종목별 Observation 수와 고유 이벤트 수
 - 종목·JSON 경로별 관측 자료형과 Observation 존재 횟수
 - 각 경로가 항상·일부·전혀 제공되지 않은 고유 이벤트 수
+- 설정된 종목·단일 값 경로별 값의 Observation 수와 고유 이벤트 수
+- 설정된 경로의 필드 누락과 객체·배열 제외 현황
 - 읽지 못한 CaptureMetadata 파일과 원인
 - 해석하지 못한 EventObservation 파일과 원인
 
@@ -384,12 +392,14 @@ data/
 | `event_view/models.py` | `CaptureMetadata`, `EventObservation`, `StructureChangeRecord` | 영속 데이터 모델 |
 | `event_view/storage.py` | `save_*`, `load_*`, `find_*_paths` | 파일 저장·로드·탐색과 구형 Metadata 호환 |
 | `event_view/observation.py` | `extract_observed_event` | Observation 참조 검증과 이벤트 추출 |
-| `json_structure.py` | `extract_json_structure` | JSON 경로와 경로별 자료형 추출 |
+| `json_structure.py` | `extract_json_structure`, `get_json_type_name` | JSON 경로와 경로별 자료형 추출 |
 | `event_view/comparison.py` | `find_*_observations`, `compare_observations`, `compare_json_structures` | 이벤트별 시점 탐색과 JSON 구조 비교 |
 | `sport_config.py` | `load_sport_codes_by_id` | 외부 종목 ID와 내부 코드 설정 로드 |
 | `sport_classification.py` | `classify_event_sport` | 이벤트의 `sport_id` 분류 |
 | `reporting/analysis.py` | `resolve_*`, `summarize_*`, `analyze_event_view_report` | 부분 실패 처리와 보고서용 집계 |
-| `reporting/field_inspection.py` | `validate_field_path`, `analyze_field_inspection` | 객체 경로 조회, 중첩 객체 전개와 이벤트별 값 변화 계산 |
+| `reporting/field_path.py` | `validate_field_path`, `resolve_json_field`, `flatten_json_object_scalars` | 보고서 분석에서 공유하는 JSON 객체 경로 처리 |
+| `reporting/field_inspection.py` | `analyze_field_inspection` | 중첩 객체 전개와 이벤트별 값 변화 계산 |
+| `reporting/tracked_field_config.py` | `load_tracked_fields_config` | 종목별 값 집계 경로 설정 로드·검증 |
 | `reporting/markdown.py` | `render_endpoint_report_markdown`, `render_sport_report_markdown`, `render_field_inspection_markdown` | endpoint·종목·필드 분석 결과의 Markdown 렌더링 |
 | `reporting/storage.py` | `build_report_output_path`, `build_field_report_output_path`, `save_report_text` | 날짜별 보고서 경로 계산과 텍스트 저장 |
 

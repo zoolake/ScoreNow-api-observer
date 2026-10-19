@@ -8,8 +8,8 @@ from jinja2 import Environment, PackageLoader, StrictUndefined
 from scorenow_api_observer.reporting.analysis import EventViewReportAnalysis
 from scorenow_api_observer.reporting.field_inspection import (
     FieldInspectionAnalysis,
-    JsonScalar,
 )
+from scorenow_api_observer.reporting.field_path import JsonScalar
 
 
 def _escape_markdown_table_cell(value: object) -> str:
@@ -125,14 +125,21 @@ def render_sport_report_markdown(
         for summary in analysis.sport_field_summaries
         if summary.sport_code == sport_code
     ]
+    sport_tracked_field_summaries = [
+        summary
+        for summary in analysis.sport_tracked_field_summaries
+        if summary.sport_code == sport_code
+    ]
 
     template = _MARKDOWN_ENVIRONMENT.get_template("event_view_sport.md.jinja")
-    return template.render(
+    content = template.render(
         generated_at=generated_at,
         sport_code=sport_code,
         sport_observation_summary=sport_observation_summary,
         sport_field_summaries=sport_field_summaries,
+        sport_tracked_field_summaries=sport_tracked_field_summaries,
     )
+    return f"{content.rstrip()}\n"
 
 
 def render_field_inspection_markdown(

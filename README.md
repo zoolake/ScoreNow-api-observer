@@ -323,11 +323,26 @@ uv run observer compare --event-id BETS_EVENT_ID
 uv run observer report
 ```
 
+종목 보고서에서 값을 집계할 단일 값 필드는
+[`config/event_view_tracked_fields.yaml`](config/event_view_tracked_fields.yaml)에
+종목별 JSON 객체 경로로 등록합니다.
+
+```yaml
+sports:
+  football:
+    - $.timer.md
+    - $.time_status
+  baseball:
+    - $.time_status
+```
+
 - BETS API를 호출하거나 API 토큰을 읽지 않습니다.
 - endpoint 보고서에는 파일 처리 현황, 응답 분석 상태·이슈, 종목별 표본과 분석 실패
   상세가 포함됩니다.
-- 종목별 보고서에는 Observation·고유 이벤트 수와 필드별 자료형·제공 현황이
-  포함됩니다.
+- 종목별 보고서에는 Observation·고유 이벤트 수, 필드별 자료형·제공 현황과 설정된
+  필드의 값별 Observation·고유 이벤트 수가 포함됩니다.
+- 값 집계는 문자열·정수·실수·boolean·`null`·필드 누락을 서로 다른 상태로
+  구분합니다. 객체와 배열은 하나의 값으로 집계하지 않고 제외 현황을 표시합니다.
 - 관측값이 없는 등록 종목과 `unclassified` 보고서도 생성합니다.
 - 일부 저장 파일을 읽거나 해석하지 못해도 나머지 자료를 분석하고, 실패 상세는
   endpoint 보고서에 남깁니다.

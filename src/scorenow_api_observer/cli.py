@@ -38,9 +38,9 @@ from scorenow_api_observer.reporting.analysis import (
     analyze_event_view_report,
     resolve_observed_events,
 )
-from scorenow_api_observer.reporting.field_inspection import (
+from scorenow_api_observer.reporting.field_inspection import analyze_field_inspection
+from scorenow_api_observer.reporting.field_path import (
     InvalidFieldPathError,
-    analyze_field_inspection,
     validate_field_path,
 )
 from scorenow_api_observer.reporting.markdown import (
@@ -52,6 +52,9 @@ from scorenow_api_observer.reporting.storage import (
     build_field_report_output_path,
     build_report_output_path,
     save_report_text,
+)
+from scorenow_api_observer.reporting.tracked_field_config import (
+    load_tracked_fields_config,
 )
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.sport_config import load_sport_codes_by_id
@@ -507,10 +510,14 @@ def report() -> None:
 
     try:
         sport_code_by_id = load_sport_codes_by_id()
+        tracked_fields_config = load_tracked_fields_config()
         analysis = analyze_event_view_report(
             metadata_file_paths=find_capture_metadata_paths(),
             observation_file_paths=find_event_observation_paths(),
             sport_code_by_id=sport_code_by_id,
+            tracked_field_paths_by_sport_code=(
+                tracked_fields_config.paths_by_sport_code
+            ),
         )
         generated_at = datetime.now(UTC)
 

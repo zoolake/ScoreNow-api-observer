@@ -19,6 +19,9 @@ from scorenow_api_observer.reporting.analysis import (
     ResponseIssueSummary,
     SportFieldSummary,
     SportObservationSummary,
+    SportTrackedFieldSummary,
+    TrackedFieldUnsupportedTypeSummary,
+    TrackedFieldValueSummary,
     analyze_event_view_report,
     load_capture_metadata_files,
     resolve_observed_event,
@@ -27,6 +30,7 @@ from scorenow_api_observer.reporting.analysis import (
     summarize_response_issues,
     summarize_sport_fields,
     summarize_sport_observations,
+    summarize_tracked_field_values,
 )
 
 
@@ -545,6 +549,153 @@ def test_summarize_sport_fields_sorts_sports_and_paths_deterministically() -> No
     ] == expected_keys
 
 
+def test_summarize_tracked_field_values_distinguishes_json_scalar_states() -> None:
+    captured_at = datetime(2026, 9, 22, 12, 30, tzinfo=UTC)
+    values: list[tuple[str, dict[str, object]]] = [
+        ("A", {"state": 1}),
+        ("A", {"state": 1}),
+        ("B", {"state": 1.0}),
+        ("C", {"state": "1"}),
+        ("D", {"state": True}),
+        ("E", {"state": None}),
+        ("F", {}),
+    ]
+    observed_events = [
+        ObservedEvent(
+            event_id=event_id,
+            captured_at=captured_at,
+            raw_file_path=Path(f"{index}.json"),
+            result_index=0,
+            sport_code="baseball",
+            event_data=event_data,
+        )
+        for index, (event_id, event_data) in enumerate(values)
+    ]
+
+    result = summarize_tracked_field_values(
+        observed_events=observed_events,
+        paths_by_sport_code={"baseball": ("$.state",)},
+    )
+
+    assert result == [
+        SportTrackedFieldSummary(
+            sport_code="baseball",
+            path="$.state",
+            value_summaries=[
+                TrackedFieldValueSummary("boolean", True, True, 1, 1),
+                TrackedFieldValueSummary("integer", True, 1, 2, 1),
+                TrackedFieldValueSummary("number", True, 1.0, 1, 1),
+                TrackedFieldValueSummary("string", True, "1", 1, 1),
+                TrackedFieldValueSummary("null", True, None, 1, 1),
+                TrackedFieldValueSummary("missing", False, None, 1, 1),
+            ],
+            unsupported_type_summaries=[],
+        )
+    ]
+
+
+def test_summarize_tracked_field_values_reports_objects_and_arrays_as_unsupported() -> (
+    None
+):
+    captured_at = datetime(2026, 9, 22, 12, 30, tzinfo=UTC)
+    observed_events = [
+        ObservedEvent(
+            event_id="A",
+            captured_at=captured_at,
+            raw_file_path=Path("a-1.json"),
+            result_index=0,
+            sport_code="baseball",
+            event_data={"state": {"code": 1}, "wrapper": [{"state": 1}]},
+        ),
+        ObservedEvent(
+            event_id="A",
+            captured_at=captured_at,
+            raw_file_path=Path("a-2.json"),
+            result_index=0,
+            sport_code="baseball",
+            event_data={"state": {}, "wrapper": [{"state": 2}]},
+        ),
+        ObservedEvent(
+            event_id="B",
+            captured_at=captured_at,
+            raw_file_path=Path("b.json"),
+            result_index=0,
+            sport_code="baseball",
+            event_data={"state": [], "wrapper": []},
+        ),
+    ]
+
+    result = summarize_tracked_field_values(
+        observed_events=observed_events,
+        paths_by_sport_code={"baseball": ("$.state", "$.wrapper.state")},
+    )
+
+    assert result == [
+        SportTrackedFieldSummary(
+            sport_code="baseball",
+            path="$.state",
+            value_summaries=[],
+            unsupported_type_summaries=[
+                TrackedFieldUnsupportedTypeSummary("array", 1, 1),
+                TrackedFieldUnsupportedTypeSummary("object", 2, 1),
+            ],
+        ),
+        SportTrackedFieldSummary(
+            sport_code="baseball",
+            path="$.wrapper.state",
+            value_summaries=[],
+            unsupported_type_summaries=[
+                TrackedFieldUnsupportedTypeSummary("array", 3, 2),
+            ],
+        ),
+    ]
+
+
+def test_summarize_tracked_field_values_uses_config_order_and_sport_filter() -> None:
+    captured_at = datetime(2026, 9, 22, 12, 30, tzinfo=UTC)
+    observed_events = [
+        ObservedEvent(
+            event_id="B",
+            captured_at=captured_at,
+            raw_file_path=Path("baseball.json"),
+            result_index=0,
+            sport_code="baseball",
+            event_data={"time_status": 3},
+        ),
+        ObservedEvent(
+            event_id="F",
+            captured_at=captured_at,
+            raw_file_path=Path("football.json"),
+            result_index=0,
+            sport_code="football",
+            event_data={"timer": {"md": 2}, "time_status": 1},
+        ),
+    ]
+
+    result = summarize_tracked_field_values(
+        observed_events=observed_events,
+        paths_by_sport_code={
+            "football": ("$.timer.md", "$.time_status"),
+            "baseball": ("$.time_status",),
+            "basketball": ("$.time_status",),
+        },
+    )
+
+    assert [(summary.sport_code, summary.path) for summary in result] == [
+        ("football", "$.timer.md"),
+        ("football", "$.time_status"),
+        ("baseball", "$.time_status"),
+        ("basketball", "$.time_status"),
+    ]
+    assert result[0].value_summaries == [
+        TrackedFieldValueSummary("integer", True, 2, 1, 1)
+    ]
+    assert result[2].value_summaries == [
+        TrackedFieldValueSummary("integer", True, 3, 1, 1)
+    ]
+    assert result[3].value_summaries == []
+
+
 def test_analyze_event_view_report_combines_summaries_and_failures(
     tmp_path: Path,
 ) -> None:
@@ -568,6 +719,10 @@ def test_analyze_event_view_report_combines_summaries_and_failures(
         metadata_file_paths=[metadata_path, missing_metadata_path],
         observation_file_paths=[observation_path, missing_observation_path],
         sport_code_by_id={"1": "football", "16": "baseball"},
+        tracked_field_paths_by_sport_code={
+            "football": ("$.time_status",),
+            "baseball": ("$.time_status",),
+        },
     )
 
     assert result.response_analysis_status_summaries == [
@@ -614,6 +769,20 @@ def test_analyze_event_view_report_combines_summaries_and_failures(
             always_present_event_count=1,
             sometimes_present_event_count=0,
             never_present_event_count=0,
+        ),
+    ]
+    assert result.sport_tracked_field_summaries == [
+        SportTrackedFieldSummary(
+            sport_code="football",
+            path="$.time_status",
+            value_summaries=[],
+            unsupported_type_summaries=[],
+        ),
+        SportTrackedFieldSummary(
+            sport_code="baseball",
+            path="$.time_status",
+            value_summaries=[TrackedFieldValueSummary("missing", False, None, 1, 1)],
+            unsupported_type_summaries=[],
         ),
     ]
     assert len(result.capture_metadata_load_failures) == 1

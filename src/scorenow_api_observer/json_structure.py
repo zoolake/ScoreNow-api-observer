@@ -14,7 +14,7 @@ def extract_json_structure(data: Any) -> dict[str, set[str]]:
 def _walk_structure(value: Any, path: str, structure: dict[str, set[str]]) -> None:
     """JSON 내부를 재귀적으로 순회합니다."""
 
-    type_name = _get_type_name(value)
+    type_name = get_json_type_name(value)
 
     structure.setdefault(path, set()).add(type_name)
 
@@ -27,7 +27,7 @@ def _walk_structure(value: Any, path: str, structure: dict[str, set[str]]) -> No
             _walk_structure(child_value, f"{path}[]", structure)
 
 
-def _get_type_name(value: Any) -> str:
+def get_json_type_name(value: Any) -> str:
     """Python 값을 읽기 쉬운 자료형 이름으로 변환합니다."""
 
     if value is None:

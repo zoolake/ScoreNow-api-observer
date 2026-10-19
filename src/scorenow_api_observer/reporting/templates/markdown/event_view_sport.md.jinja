@@ -23,3 +23,42 @@
 {% else -%}
 관측된 필드가 없습니다.
 {% endif -%}
+
+## 추적 필드 값 현황
+
+값의 Observation 수는 전체 수집 과정에서 해당 값이 관측된 횟수이고, 고유 이벤트
+수는 해당 값이 한 번 이상 관측된 경기 수입니다. `null`과 필드 없음은 서로 다른
+상태로 집계합니다.
+
+{% if sport_tracked_field_summaries -%}
+{% for summary in sport_tracked_field_summaries -%}
+### `{{ summary.path }}`
+
+분석 명령: `{{ summary.path | inspect_field_command(summary.sport_code) }}`
+
+{% if summary.value_summaries -%}
+| 자료형 | 값 | Observation 수 | 고유 이벤트 수 |
+| --- | --- | ---: | ---: |
+{% for value_summary in summary.value_summaries -%}
+| {{ value_summary.value_type }} | {{ value_summary.present | field_value(value_summary.value) | markdown_table_cell }} | {{ value_summary.observation_count }} | {{ value_summary.unique_event_count }} |
+{% endfor -%}
+{% else -%}
+집계할 수 있는 단일 값 상태가 없습니다.
+{% endif %}
+
+{% if summary.unsupported_type_summaries -%}
+#### 값 집계 제외
+
+객체와 배열은 하나의 값으로 집계하지 않습니다.
+
+| 자료형 | 제외 Observation 수 | 고유 이벤트 수 |
+| --- | ---: | ---: |
+{% for unsupported_summary in summary.unsupported_type_summaries -%}
+| {{ unsupported_summary.value_type }} | {{ unsupported_summary.observation_count }} | {{ unsupported_summary.unique_event_count }} |
+{% endfor -%}
+{% endif %}
+
+{% endfor -%}
+{% else -%}
+이 종목에 설정된 추적 필드가 없습니다.
+{% endif -%}

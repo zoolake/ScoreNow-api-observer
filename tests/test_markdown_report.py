@@ -11,6 +11,9 @@ from scorenow_api_observer.reporting.analysis import (
     ResponseIssueSummary,
     SportFieldSummary,
     SportObservationSummary,
+    SportTrackedFieldSummary,
+    TrackedFieldUnsupportedTypeSummary,
+    TrackedFieldValueSummary,
 )
 from scorenow_api_observer.reporting.field_inspection import (
     EventFieldInspection,
@@ -305,6 +308,27 @@ def test_render_sport_report_markdown_renders_selected_sport_fields() -> None:
                 never_present_event_count=1,
             ),
         ],
+        sport_tracked_field_summaries=[
+            SportTrackedFieldSummary(
+                sport_code="baseball",
+                path="$.time_status",
+                value_summaries=[
+                    TrackedFieldValueSummary("integer", True, 1, 2, 1),
+                    TrackedFieldValueSummary("string", True, "1|live", 1, 1),
+                    TrackedFieldValueSummary("null", True, None, 1, 1),
+                    TrackedFieldValueSummary("missing", False, None, 1, 1),
+                ],
+                unsupported_type_summaries=[
+                    TrackedFieldUnsupportedTypeSummary("object", 1, 1)
+                ],
+            ),
+            SportTrackedFieldSummary(
+                sport_code="football",
+                path="$.time_status",
+                value_summaries=[TrackedFieldValueSummary("integer", True, 3, 1, 1)],
+                unsupported_type_summaries=[],
+            ),
+        ],
     )
 
     result = render_sport_report_markdown(
@@ -328,6 +352,18 @@ def test_render_sport_report_markdown_renders_selected_sport_fields() -> None:
     ) in result
     assert "| $.incidents[] | object | 1 | 0 | 1 | 1 | 배열 경로 미지원 |" in result
     assert "$.football_only" not in result
+    assert "## 추적 필드 값 현황" in result
+    assert "### `$.time_status`" in result
+    assert (
+        "`uv run observer inspect-field --sport-code baseball --path '$.time_status'`"
+        in result
+    )
+    assert "| integer | 1 | 2 | 1 |" in result
+    assert '| string | "1\\|live" | 1 | 1 |' in result
+    assert "| null | null | 1 | 1 |" in result
+    assert "| missing | &lt;필드 없음&gt; | 1 | 1 |" in result
+    assert "| object | 1 | 1 |" in result
+    assert "| integer | 3 | 1 | 1 |" not in result
     assert result.endswith("\n")
     assert not result.endswith("\n\n")
 
