@@ -4,16 +4,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from scorenow_api_observer.reporting.analysis import (
-    ObservedEvent,
-    ObservedEventResolutionFailure,
-)
 from scorenow_api_observer.reporting.field_path import (
     JsonScalar,
     UnsupportedArrayFieldValueError,
     flatten_json_object_scalars,
     resolve_json_field,
     validate_field_path,
+)
+from scorenow_api_observer.reporting.models import (
+    ObservedEvent,
+    ObservedEventResolutionFailure,
 )
 
 type FieldValueChangeKind = Literal[

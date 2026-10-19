@@ -232,13 +232,13 @@ cli.report()
 ├── event_view.storage.find_capture_metadata_paths(...)
 ├── event_view.storage.find_event_observation_paths(...)
 ├── reporting.analysis.analyze_event_view_report(...)
-│   ├── reporting.analysis.load_capture_metadata_files(...)
+│   ├── reporting.sources.load_capture_metadata_files(...)
 │   │   └── 파일마다 event_view.storage.load_capture_metadata(path)
 │   │       └── 구형 파일이면 원문을 다시 분석해 현재 모델로 변환
-│   ├── reporting.analysis.resolve_observed_events(...)
+│   ├── reporting.sources.resolve_observed_events(...)
 │   │   └── 파일마다
 │   │       ├── event_view.storage.load_event_observation(path)
-│   │       └── reporting.analysis.resolve_observed_event(...)
+│   │       └── reporting.sources.resolve_observed_event(...)
 │   │           ├── event_view.storage.load_capture_metadata(linked metadata)
 │   │           ├── event_view.storage.load_json_file(linked raw response)
 │   │           ├── event_view.observation.extract_observed_event(...)
@@ -250,7 +250,7 @@ cli.report()
 │   │   └── json_structure.extract_json_structure(event_data)
 │   ├── reporting.analysis.summarize_tracked_field_values(...)
 │   │   └── Observation마다 reporting.field_path.resolve_json_field(...)
-│   └── reporting.analysis.EventViewReportAnalysis(...)
+│   └── reporting.models.EventViewReportAnalysis(...)
 ├── reporting.markdown.render_endpoint_report_markdown(...)
 │   └── reporting/templates/markdown/event_view_endpoint.md.jinja 렌더링
 ├── 종목별 reporting.markdown.render_sport_report_markdown(...)
@@ -275,7 +275,7 @@ cli.inspect_field(sport_code, field_path, event_id)
 ├── reporting.field_path.validate_field_path(...)
 ├── sport_config.load_sport_codes_by_id(...)
 ├── event_view.storage.find_event_observation_paths(...)
-├── reporting.analysis.resolve_observed_events(...)
+├── reporting.sources.resolve_observed_events(...)
 ├── reporting.field_inspection.analyze_field_inspection(...)
 │   └── 이벤트별 reporting.field_inspection._analyze_event_field(...)
 │       ├── 요청 객체 경로 조회
@@ -396,7 +396,9 @@ data/
 | `event_view/comparison.py` | `find_*_observations`, `compare_observations`, `compare_json_structures` | 이벤트별 시점 탐색과 JSON 구조 비교 |
 | `sport_config.py` | `load_sport_codes_by_id` | 외부 종목 ID와 내부 코드 설정 로드 |
 | `sport_classification.py` | `classify_event_sport` | 이벤트의 `sport_id` 분류 |
-| `reporting/analysis.py` | `resolve_*`, `summarize_*`, `analyze_event_view_report` | 부분 실패 처리와 보고서용 집계 |
+| `reporting/models.py` | `ObservedEvent`, `EventViewReportAnalysis`, 각종 요약·실패 모델 | 보고서 분석 단계 사이에서 전달하는 데이터 구조 |
+| `reporting/sources.py` | `resolve_observed_event(s)`, `load_capture_metadata_files` | 저장 파일을 읽어 보고서 분석 입력으로 해석하고 부분 실패 기록 |
+| `reporting/analysis.py` | `summarize_*`, `analyze_event_view_report` | 보고서용 집계와 전체 분석 결과 조합 |
 | `reporting/field_path.py` | `validate_field_path`, `resolve_json_field`, `flatten_json_object_scalars` | 보고서 분석에서 공유하는 JSON 객체 경로 처리 |
 | `reporting/field_inspection.py` | `analyze_field_inspection` | 중첩 객체 전개와 이벤트별 값 변화 계산 |
 | `reporting/tracked_field_config.py` | `load_tracked_fields_config` | 종목별 값 집계 경로 설정 로드·검증 |

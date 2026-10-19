@@ -23,18 +23,18 @@ from scorenow_api_observer.event_view.models import (
 from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
 )
-from scorenow_api_observer.reporting.analysis import (
-    CaptureMetadataLoadFailure,
-    EventViewReportAnalysis,
-    ObservedEventResolutionFailure,
-    ObservedEventResolutionResult,
-    SportObservationSummary,
-)
 from scorenow_api_observer.reporting.field_inspection import (
     EventFieldInspection,
     FieldInspectionAnalysis,
     FieldValueChange,
     FieldValueTimeline,
+)
+from scorenow_api_observer.reporting.models import (
+    CaptureMetadataLoadFailure,
+    EventViewReportAnalysis,
+    ObservedEventResolutionFailure,
+    ObservedEventResolutionResult,
+    SportObservationSummary,
 )
 from scorenow_api_observer.reporting.tracked_field_config import (
     TrackedFieldsConfig,

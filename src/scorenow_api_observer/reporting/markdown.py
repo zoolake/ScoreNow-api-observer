@@ -5,11 +5,11 @@ from html import escape
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-from scorenow_api_observer.reporting.analysis import EventViewReportAnalysis
 from scorenow_api_observer.reporting.field_inspection import (
     FieldInspectionAnalysis,
 )
 from scorenow_api_observer.reporting.field_path import JsonScalar
+from scorenow_api_observer.reporting.models import EventViewReportAnalysis
 
 
 def _escape_markdown_table_cell(value: object) -> str:

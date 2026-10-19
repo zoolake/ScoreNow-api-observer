@@ -14,6 +14,14 @@ from scorenow_api_observer.event_view.storage import (
     save_event_observation,
 )
 from scorenow_api_observer.reporting.analysis import (
+    analyze_event_view_report,
+    summarize_response_analysis_statuses,
+    summarize_response_issues,
+    summarize_sport_fields,
+    summarize_sport_observations,
+    summarize_tracked_field_values,
+)
+from scorenow_api_observer.reporting.models import (
     ObservedEvent,
     ResponseAnalysisStatusSummary,
     ResponseIssueSummary,
@@ -22,15 +30,11 @@ from scorenow_api_observer.reporting.analysis import (
     SportTrackedFieldSummary,
     TrackedFieldUnsupportedTypeSummary,
     TrackedFieldValueSummary,
-    analyze_event_view_report,
+)
+from scorenow_api_observer.reporting.sources import (
     load_capture_metadata_files,
     resolve_observed_event,
     resolve_observed_events,
-    summarize_response_analysis_statuses,
-    summarize_response_issues,
-    summarize_sport_fields,
-    summarize_sport_observations,
-    summarize_tracked_field_values,
 )
 
 

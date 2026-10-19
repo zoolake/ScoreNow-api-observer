@@ -3,18 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.reporting.analysis import (
-    CaptureMetadataLoadFailure,
-    EventViewReportAnalysis,
-    ObservedEventResolutionFailure,
-    ResponseAnalysisStatusSummary,
-    ResponseIssueSummary,
-    SportFieldSummary,
-    SportObservationSummary,
-    SportTrackedFieldSummary,
-    TrackedFieldUnsupportedTypeSummary,
-    TrackedFieldValueSummary,
-)
 from scorenow_api_observer.reporting.field_inspection import (
     EventFieldInspection,
     FieldInspectionAnalysis,
@@ -27,6 +15,18 @@ from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
     render_field_inspection_markdown,
     render_sport_report_markdown,
+)
+from scorenow_api_observer.reporting.models import (
+    CaptureMetadataLoadFailure,
+    EventViewReportAnalysis,
+    ObservedEventResolutionFailure,
+    ResponseAnalysisStatusSummary,
+    ResponseIssueSummary,
+    SportFieldSummary,
+    SportObservationSummary,
+    SportTrackedFieldSummary,
+    TrackedFieldUnsupportedTypeSummary,
+    TrackedFieldValueSummary,
 )
 
 

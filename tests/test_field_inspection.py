@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from scorenow_api_observer.reporting.analysis import ObservedEvent
 from scorenow_api_observer.reporting.field_inspection import (
     FieldValueChange,
     analyze_field_inspection,
@@ -12,6 +11,7 @@ from scorenow_api_observer.reporting.field_path import (
     UnsupportedArrayFieldPathError,
     validate_field_path,
 )
+from scorenow_api_observer.reporting.models import ObservedEvent
 
 
 def _observed_event(

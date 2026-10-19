@@ -34,10 +34,7 @@ from scorenow_api_observer.event_view.storage import (
     find_event_observation_paths,
     save_structure_change_record,
 )
-from scorenow_api_observer.reporting.analysis import (
-    analyze_event_view_report,
-    resolve_observed_events,
-)
+from scorenow_api_observer.reporting.analysis import analyze_event_view_report
 from scorenow_api_observer.reporting.field_inspection import analyze_field_inspection
 from scorenow_api_observer.reporting.field_path import (
     InvalidFieldPathError,
@@ -48,6 +45,7 @@ from scorenow_api_observer.reporting.markdown import (
     render_field_inspection_markdown,
     render_sport_report_markdown,
 )
+from scorenow_api_observer.reporting.sources import resolve_observed_events
 from scorenow_api_observer.reporting.storage import (
     build_field_report_output_path,
     build_report_output_path,
