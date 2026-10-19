@@ -15,10 +15,10 @@
 값이 `null`이어도 해당 필드는 존재한 것으로 집계합니다.
 
 {% if sport_field_summaries -%}
-| 필드 경로 | 관측 자료형 | 존재 Observation 수 | 항상 제공 이벤트 수 | 일부 제공 이벤트 수 | 미제공 이벤트 수 |
-| --- | --- | ---: | ---: | ---: | ---: |
+| 필드 경로 | 관측 자료형 | 존재 Observation 수 | 항상 제공 이벤트 수 | 일부 제공 이벤트 수 | 미제공 이벤트 수 | 필드 분석 명령 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
 {% for summary in sport_field_summaries -%}
-| {{ summary.path | markdown_table_cell }} | {{ summary.observed_types | sort | join(", ") | markdown_table_cell }} | {{ summary.present_observation_count }} | {{ summary.always_present_event_count }} | {{ summary.sometimes_present_event_count }} | {{ summary.never_present_event_count }} |
+| {{ summary.path | markdown_table_cell }} | {{ summary.observed_types | sort | join(", ") | markdown_table_cell }} | {{ summary.present_observation_count }} | {{ summary.always_present_event_count }} | {{ summary.sometimes_present_event_count }} | {{ summary.never_present_event_count }} | {% if sport_code is none %}-{% elif "[]" in summary.path %}배열 경로 미지원{% else %}`{{ summary.path | inspect_field_command(sport_code) | markdown_table_cell }}`{% endif %} |
 {% endfor -%}
 {% else -%}
 관측된 필드가 없습니다.

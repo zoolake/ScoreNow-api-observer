@@ -34,12 +34,22 @@ from scorenow_api_observer.event_view.storage import (
     find_event_observation_paths,
     save_structure_change_record,
 )
-from scorenow_api_observer.reporting.analysis import analyze_event_view_report
+from scorenow_api_observer.reporting.analysis import (
+    analyze_event_view_report,
+    resolve_observed_events,
+)
+from scorenow_api_observer.reporting.field_inspection import (
+    InvalidFieldPathError,
+    analyze_field_inspection,
+    validate_field_path,
+)
 from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
+    render_field_inspection_markdown,
     render_sport_report_markdown,
 )
 from scorenow_api_observer.reporting.storage import (
+    build_field_report_output_path,
     build_report_output_path,
     save_report_text,
 )
@@ -572,6 +582,103 @@ def report() -> None:
             f"CaptureMetadata {metadata_failure_count}건, "
             f"EventObservation {observation_failure_count}건. "
             "자세한 내용은 endpoint 보고서를 확인하세요.",
+            err=True,
+        )
+
+
+@app.command("inspect-field")
+def inspect_field(
+    sport_code: str = typer.Option(
+        ...,
+        "--sport-code",
+        help="분석할 내부 종목 코드",
+    ),
+    field_path: str = typer.Option(
+        ...,
+        "--path",
+        help="분석할 객체 경로($.field.child 형식)",
+    ),
+    event_id: str | None = typer.Option(
+        None,
+        "--event-id",
+        "-e",
+        help="분석할 외부 API 경기 ID. 생략하면 해당 종목의 전체 경기",
+    ),
+) -> None:
+    """저장된 Event View 자료에서 특정 필드의 값 변화를 분석합니다."""
+
+    normalized_sport_code = sport_code.strip().lower()
+    normalized_event_id = event_id.strip() if event_id is not None else None
+
+    try:
+        validate_field_path(field_path)
+        if not normalized_sport_code:
+            raise ValueError("종목 코드가 비어 있습니다.")
+        if normalized_event_id == "":
+            raise ValueError("이벤트 ID가 비어 있습니다.")
+
+        sport_code_by_id = load_sport_codes_by_id()
+        if normalized_sport_code not in sport_code_by_id.values():
+            raise ValueError(
+                f"설정에 등록되지 않은 종목 코드입니다: {normalized_sport_code!r}"
+            )
+    except InvalidFieldPathError as error:
+        typer.echo(f"필드 경로가 올바르지 않습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+    except (OSError, ValueError) as error:
+        typer.echo(f"필드 분석 조건을 준비하지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        resolution = resolve_observed_events(
+            observation_file_paths=find_event_observation_paths(),
+            sport_code_by_id=sport_code_by_id,
+        )
+        analysis = analyze_field_inspection(
+            observed_events=resolution.observed_events,
+            resolution_failures=resolution.failures,
+            sport_code=normalized_sport_code,
+            path=field_path,
+            event_id=normalized_event_id,
+        )
+        if analysis.input_observation_count == 0:
+            filter_description = (
+                f"종목 {normalized_sport_code!r}의 이벤트 {normalized_event_id!r}"
+                if normalized_event_id is not None
+                else f"종목 {normalized_sport_code!r}"
+            )
+            raise ValueError(
+                f"{filter_description}에 해당하는 EventObservation이 없습니다."
+            )
+
+        generated_at = datetime.now(UTC)
+        content = render_field_inspection_markdown(
+            analysis=analysis,
+            generated_at=generated_at,
+        )
+        output_path = build_field_report_output_path(
+            generated_at=generated_at,
+            sport_code=normalized_sport_code,
+            field_path=field_path,
+        )
+        saved_path = save_report_text(content=content, output_path=output_path)
+    except (OSError, ValueError, TemplateError) as error:
+        typer.echo(f"필드 분석 보고서 생성에 실패했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"입력 Observation: {analysis.input_observation_count}개")
+    typer.echo(f"분석 Observation: {analysis.analyzed_observation_count}개")
+    typer.echo(f"분석 범위 이벤트: {analysis.input_event_count}개")
+    typer.echo(f"필드 관측 이벤트: {analysis.observed_event_count}개")
+    typer.echo(f"미관측으로 생략한 이벤트: {analysis.unobserved_event_count}개")
+    typer.echo(f"필드 분석 보고서 저장 위치: {saved_path}")
+
+    if analysis.field_failures or analysis.resolution_failures:
+        typer.echo(
+            "일부 Observation을 분석하지 못했습니다. "
+            f"필드 값 제외 {len(analysis.field_failures)}건, "
+            f"EventObservation 해석 실패 {len(analysis.resolution_failures)}건. "
+            "자세한 내용은 보고서를 확인하세요.",
             err=True,
         )
 

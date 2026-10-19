@@ -35,6 +35,36 @@ def build_report_output_path(
     )
 
 
+def build_field_report_output_path(
+    *,
+    generated_at: datetime,
+    sport_code: str,
+    field_path: str,
+    base_directory: Path = REPORT_DIRECTORY,
+) -> Path:
+    """종목·필드별 분석 보고서의 날짜별 출력 경로를 계산합니다."""
+
+    if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+        raise ValueError("보고서 생성 시각에는 timezone 정보가 필요합니다.")
+
+    safe_sport_code = _to_safe_report_name(sport_code)
+    path_report_name = field_path.removeprefix("$.")
+    if path_report_name == "$":
+        path_report_name = "root"
+    safe_field_path = _to_safe_report_name(path_report_name)
+    generated_at_utc = generated_at.astimezone(UTC)
+    date_directory = generated_at_utc.strftime("%Y-%m-%d")
+    timestamp = generated_at_utc.strftime("%Y%m%dT%H%M%S%fZ")
+
+    return (
+        base_directory
+        / date_directory
+        / "field"
+        / safe_sport_code
+        / f"{timestamp}_{safe_field_path}.md"
+    )
+
+
 def save_report_text(*, content: str, output_path: Path) -> Path:
     """보고서 텍스트를 UTF-8로 새 파일에 저장하고 경로를 반환합니다."""
 

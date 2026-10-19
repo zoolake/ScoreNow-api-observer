@@ -1,0 +1,88 @@
+# Event View 필드 변화 보고서
+
+- 종목: `{{ analysis.sport_code }}`
+- 요청 경로: `{{ analysis.requested_path }}`
+- 이벤트 필터: {% if analysis.event_id_filter is none %}전체 이벤트{% else %}`{{ analysis.event_id_filter }}`{% endif %}
+- 생성 시각: `{{ generated_at.isoformat() }}`
+
+## 분석 개요
+
+### Observation
+
+| 입력 수 | 분석 수 | 값 형태로 인한 제외 수 |
+| ---: | ---: | ---: |
+| {{ analysis.input_observation_count }} | {{ analysis.analyzed_observation_count }} | {{ analysis.field_failures | length }} |
+
+### 이벤트
+
+| 분석 범위 | 필드 관측 | 미관측으로 본문에서 생략 |
+| ---: | ---: | ---: |
+| {{ analysis.input_event_count }} | {{ analysis.observed_event_count }} | {{ analysis.unobserved_event_count }} |
+
+`null`은 필드가 존재하면서 값이 `null`인 상태입니다. `<필드 없음>`은 해당 경로가
+응답에 존재하지 않는 상태입니다. 연속해서 같은 상태가 관측된 구간은 생략합니다.
+
+## 이벤트별 변화
+
+{% if analysis.events -%}
+{% for event in analysis.events -%}
+### 이벤트 `{{ event.event_id }}`
+
+- 입력 Observation: {{ event.input_observation_count }}개
+- 분석 Observation: {{ event.analyzed_observation_count }}개
+
+{% if event.object_presence_changes -%}
+#### `{{ analysis.requested_path }}` 객체 존재 변화
+
+| 수집 시각 | 변화 | 현재 상태 | 원문 경로 |
+| --- | --- | --- | --- |
+{% for change in event.object_presence_changes -%}
+| {{ change.captured_at.isoformat() }} | {{ presence_change_labels[change.kind] }} | {% if change.present %}존재{% else %}필드 없음{% endif %} | {{ change.raw_file_path | markdown_table_cell }} |
+{% endfor %}
+{% endif -%}
+{% if event.value_timelines -%}
+{% for timeline in event.value_timelines -%}
+#### `{{ timeline.path }}`
+
+| 수집 시각 | 변화 | 이전 값 | 현재 값 | 원문 경로 |
+| --- | --- | --- | --- | --- |
+{% for change in timeline.changes -%}
+| {{ change.captured_at.isoformat() }} | {{ value_change_labels[change.kind] }} | {% if change.kind == "initial" %}-{% else %}{{ change.previous_present | field_value(change.previous_value) | markdown_table_cell }}{% endif %} | {{ change.current_present | field_value(change.current_value) | markdown_table_cell }} | {{ change.raw_file_path | markdown_table_cell }} |
+{% endfor %}
+{% endfor %}
+{% else -%}
+분석할 수 있는 하위 단일 값 필드가 없습니다.
+
+{% endif -%}
+{% endfor -%}
+{% else -%}
+{% if analysis.event_id_filter is not none -%}
+이벤트 `{{ analysis.event_id_filter }}`에서는 `{{ analysis.requested_path }}` 경로가 한 번도 관측되지 않았습니다.
+{% else -%}
+선택한 종목에서는 `{{ analysis.requested_path }}` 경로가 한 번도 관측되지 않았습니다.
+{% endif %}
+
+{% endif -%}
+## 분석 제외 내역
+
+{% if analysis.field_failures -%}
+| 이벤트 ID | 수집 시각 | 원문 경로 | 제외 이유 |
+| --- | --- | --- | --- |
+{% for failure in analysis.field_failures -%}
+| {{ failure.event_id | markdown_table_cell }} | {{ failure.captured_at.isoformat() }} | {{ failure.raw_file_path | markdown_table_cell }} | {{ failure.error_message | markdown_table_cell }} |
+{% endfor -%}
+{% else -%}
+필드 값의 형태 때문에 제외된 Observation이 없습니다.
+{% endif %}
+
+## EventObservation 해석 실패
+
+{% if analysis.resolution_failures -%}
+| Observation 파일 경로 | 오류 |
+| --- | --- |
+{% for failure in analysis.resolution_failures -%}
+| {{ failure.observation_file_path | markdown_table_cell }} | {{ failure.error_message | markdown_table_cell }} |
+{% endfor -%}
+{% else -%}
+해석에 실패한 EventObservation 파일이 없습니다.
+{% endif -%}

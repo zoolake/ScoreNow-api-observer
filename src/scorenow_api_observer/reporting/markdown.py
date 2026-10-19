@@ -1,9 +1,15 @@
+import json
+import shlex
 from datetime import datetime
 from html import escape
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from scorenow_api_observer.reporting.analysis import EventViewReportAnalysis
+from scorenow_api_observer.reporting.field_inspection import (
+    FieldInspectionAnalysis,
+    JsonScalar,
+)
 
 
 def _escape_markdown_table_cell(value: object) -> str:
@@ -24,7 +30,34 @@ def _create_markdown_environment() -> Environment:
         keep_trailing_newline=True,
     )
     environment.filters["markdown_table_cell"] = _escape_markdown_table_cell
+    environment.filters["field_value"] = _format_field_value
+    environment.filters["inspect_field_command"] = _build_inspect_field_command
     return environment
+
+
+def _format_field_value(present: bool, value: JsonScalar) -> str:
+    """필드의 누락 여부와 JSON 단일 값을 서로 구분하여 표시합니다."""
+
+    if not present:
+        return "<필드 없음>"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _build_inspect_field_command(path: str, sport_code: str) -> str:
+    """종목 보고서의 필드 경로를 다시 분석할 CLI 명령을 만듭니다."""
+
+    return shlex.join(
+        [
+            "uv",
+            "run",
+            "observer",
+            "inspect-field",
+            "--sport-code",
+            sport_code,
+            "--path",
+            path,
+        ]
+    )
 
 
 _MARKDOWN_ENVIRONMENT = _create_markdown_environment()
@@ -99,4 +132,29 @@ def render_sport_report_markdown(
         sport_code=sport_code,
         sport_observation_summary=sport_observation_summary,
         sport_field_summaries=sport_field_summaries,
+    )
+
+
+def render_field_inspection_markdown(
+    *,
+    analysis: FieldInspectionAnalysis,
+    generated_at: datetime,
+) -> str:
+    """Event View 필드 변화 분석 결과를 Markdown 문자열로 렌더링합니다."""
+
+    template = _MARKDOWN_ENVIRONMENT.get_template("event_view_field.md.jinja")
+    return template.render(
+        analysis=analysis,
+        generated_at=generated_at,
+        value_change_labels={
+            "initial": "최초 상태",
+            "appeared": "등장",
+            "changed": "값 변경",
+            "disappeared": "사라짐",
+        },
+        presence_change_labels={
+            "initial": "최초 상태",
+            "appeared": "등장",
+            "disappeared": "사라짐",
+        },
     )

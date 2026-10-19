@@ -6,6 +6,7 @@ import pytest
 
 from scorenow_api_observer.reporting.storage import (
     ReportFormat,
+    build_field_report_output_path,
     build_report_output_path,
     save_report_text,
 )
@@ -89,3 +90,23 @@ def test_save_report_text_does_not_overwrite_existing_file(tmp_path: Path) -> No
         save_report_text(content="replacement\n", output_path=output_path)
 
     assert output_path.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_build_field_report_output_path_uses_sport_directory_and_safe_path(
+    tmp_path: Path,
+) -> None:
+    result = build_field_report_output_path(
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+        sport_code="baseball",
+        field_path="$.scores.10.home",
+        base_directory=tmp_path / "reports",
+    )
+
+    assert result == (
+        tmp_path
+        / "reports"
+        / "2026-10-20"
+        / "field"
+        / "baseball"
+        / "20261020T123000000000Z_scores.10.home.md"
+    )

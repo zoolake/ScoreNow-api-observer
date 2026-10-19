@@ -12,8 +12,17 @@ from scorenow_api_observer.reporting.analysis import (
     SportFieldSummary,
     SportObservationSummary,
 )
+from scorenow_api_observer.reporting.field_inspection import (
+    EventFieldInspection,
+    FieldInspectionAnalysis,
+    FieldInspectionFailure,
+    FieldPresenceChange,
+    FieldValueChange,
+    FieldValueTimeline,
+)
 from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
+    render_field_inspection_markdown,
     render_sport_report_markdown,
 )
 
@@ -286,6 +295,15 @@ def test_render_sport_report_markdown_renders_selected_sport_fields() -> None:
                 sometimes_present_event_count=0,
                 never_present_event_count=0,
             ),
+            SportFieldSummary(
+                sport_code="baseball",
+                path="$.incidents[]",
+                observed_types={"object"},
+                present_observation_count=1,
+                always_present_event_count=0,
+                sometimes_present_event_count=1,
+                never_present_event_count=1,
+            ),
         ],
     )
 
@@ -304,7 +322,11 @@ def test_render_sport_report_markdown_renders_selected_sport_fields() -> None:
         "| Observation 수 | 고유 이벤트 수 |\n| ---: | ---: |\n| 4 | 2 |\n"
     ) in result
     assert "값이 `null`이어도 해당 필드는 존재한 것으로 집계합니다." in result
-    assert ("| $.timer\\|md | integer, null | 4 | 1 | 1 | 0 |\n") in result
+    assert (
+        "| $.timer\\|md | integer, null | 4 | 1 | 1 | 0 | "
+        "`uv run observer inspect-field --sport-code baseball --path '$.timer\\|md'` |\n"
+    ) in result
+    assert "| $.incidents[] | object | 1 | 0 | 1 | 1 | 배열 경로 미지원 |" in result
     assert "$.football_only" not in result
     assert result.endswith("\n")
     assert not result.endswith("\n\n")
@@ -377,3 +399,113 @@ def test_render_sport_report_markdown_rejects_missing_sport_summary() -> None:
             sport_code="baseball",
             generated_at=datetime(2026, 9, 24, 12, 30, tzinfo=UTC),
         )
+
+
+def test_render_field_inspection_markdown_renders_nested_object_timeline() -> None:
+    initial_time = datetime(2026, 10, 20, 12, 30, tzinfo=UTC)
+    appeared_time = datetime(2026, 10, 20, 12, 31, tzinfo=UTC)
+    analysis = FieldInspectionAnalysis(
+        sport_code="baseball",
+        requested_path="$.scores.10",
+        event_id_filter="123",
+        input_observation_count=2,
+        analyzed_observation_count=2,
+        input_event_count=1,
+        events=[
+            EventFieldInspection(
+                event_id="123",
+                input_observation_count=2,
+                analyzed_observation_count=2,
+                object_presence_changes=[
+                    FieldPresenceChange(
+                        captured_at=initial_time,
+                        raw_file_path=Path("data/raw/first.json"),
+                        kind="initial",
+                        present=False,
+                    ),
+                    FieldPresenceChange(
+                        captured_at=appeared_time,
+                        raw_file_path=Path("data/raw/second.json"),
+                        kind="appeared",
+                        present=True,
+                    ),
+                ],
+                value_timelines=[
+                    FieldValueTimeline(
+                        path="$.scores.10.home",
+                        changes=[
+                            FieldValueChange(
+                                captured_at=initial_time,
+                                raw_file_path=Path("data/raw/first.json"),
+                                kind="initial",
+                                previous_present=False,
+                                previous_value=None,
+                                current_present=False,
+                                current_value=None,
+                            ),
+                            FieldValueChange(
+                                captured_at=appeared_time,
+                                raw_file_path=Path("data/raw/second.json"),
+                                kind="appeared",
+                                previous_present=False,
+                                previous_value=None,
+                                current_present=True,
+                                current_value="1",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        resolution_failures=[],
+        field_failures=[
+            FieldInspectionFailure(
+                event_id="123",
+                captured_at=appeared_time,
+                raw_file_path=Path("data/raw/array.json"),
+                error_message="$.scores.10.items에서 배열이 발견됨",
+            )
+        ],
+    )
+
+    result = render_field_inspection_markdown(
+        analysis=analysis,
+        generated_at=datetime(2026, 10, 20, 13, 0, tzinfo=UTC),
+    )
+
+    assert result.startswith("# Event View 필드 변화 보고서\n")
+    assert "- 요청 경로: `$.scores.10`" in result
+    assert "| 1 | 1 | 0 |" in result
+    assert "### 이벤트 `123`" in result
+    assert "#### `$.scores.10` 객체 존재 변화" in result
+    assert "#### `$.scores.10.home`" in result
+    assert "<필드 없음>" in result
+    assert '등장 | &lt;필드 없음&gt; | "1" | data/raw/second.json' in result
+    assert "$.scores.10.items에서 배열이 발견됨" in result
+    assert result.endswith("\n")
+
+
+def test_render_field_inspection_markdown_describes_explicit_event_without_field() -> (
+    None
+):
+    analysis = FieldInspectionAnalysis(
+        sport_code="baseball",
+        requested_path="$.scores.10",
+        event_id_filter="123",
+        input_observation_count=3,
+        analyzed_observation_count=3,
+        input_event_count=1,
+        events=[],
+        resolution_failures=[],
+        field_failures=[],
+    )
+
+    result = render_field_inspection_markdown(
+        analysis=analysis,
+        generated_at=datetime(2026, 10, 20, 13, 0, tzinfo=UTC),
+    )
+
+    assert "| 1 | 0 | 1 |" in result
+    assert (
+        "이벤트 `123`에서는 `$.scores.10` 경로가 한 번도 관측되지 않았습니다." in result
+    )

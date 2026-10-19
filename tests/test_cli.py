@@ -27,7 +27,14 @@ from scorenow_api_observer.reporting.analysis import (
     CaptureMetadataLoadFailure,
     EventViewReportAnalysis,
     ObservedEventResolutionFailure,
+    ObservedEventResolutionResult,
     SportObservationSummary,
+)
+from scorenow_api_observer.reporting.field_inspection import (
+    EventFieldInspection,
+    FieldInspectionAnalysis,
+    FieldValueChange,
+    FieldValueTimeline,
 )
 
 
@@ -714,3 +721,145 @@ def test_report_exits_when_sport_config_cannot_be_loaded(
 
     assert result.exit_code == 1
     assert "보고서 생성에 실패했습니다. config missing" in result.output
+
+
+def test_inspect_field_creates_report_from_stored_observations_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_at = datetime(2026, 10, 20, 12, 30, tzinfo=UTC)
+    observation_paths = [Path("data/observations/123/first.json")]
+    analysis = FieldInspectionAnalysis(
+        sport_code="baseball",
+        requested_path="$.time_status",
+        event_id_filter="123",
+        input_observation_count=1,
+        analyzed_observation_count=1,
+        input_event_count=1,
+        events=[
+            EventFieldInspection(
+                event_id="123",
+                input_observation_count=1,
+                analyzed_observation_count=1,
+                object_presence_changes=[],
+                value_timelines=[
+                    FieldValueTimeline(
+                        path="$.time_status",
+                        changes=[
+                            FieldValueChange(
+                                captured_at=generated_at,
+                                raw_file_path=Path("data/raw/first.json"),
+                                kind="initial",
+                                previous_present=False,
+                                previous_value=None,
+                                current_present=True,
+                                current_value="1",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        resolution_failures=[],
+        field_failures=[],
+    )
+    analyzed_arguments: list[tuple[str, str, str | None]] = []
+    output_path = Path("reports/event-view/field/baseball/report.md")
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz: object) -> datetime:
+            assert tz is UTC
+            return generated_at
+
+    def analyze_field(**kwargs: object) -> FieldInspectionAnalysis:
+        analyzed_arguments.append(
+            (
+                str(kwargs["sport_code"]),
+                str(kwargs["path"]),
+                str(kwargs["event_id"]) if kwargs["event_id"] is not None else None,
+            )
+        )
+        return analysis
+
+    monkeypatch.setattr(cli, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: pytest.fail("inspect-field 명령은 API 설정을 읽으면 안 됩니다."),
+    )
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", lambda: {"16": "baseball"})
+    monkeypatch.setattr(
+        cli,
+        "find_event_observation_paths",
+        lambda: observation_paths,
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_observed_events",
+        lambda **_kwargs: ObservedEventResolutionResult([], []),
+    )
+    monkeypatch.setattr(cli, "analyze_field_inspection", analyze_field)
+    monkeypatch.setattr(
+        cli,
+        "render_field_inspection_markdown",
+        lambda **_kwargs: "field report\n",
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_field_report_output_path",
+        lambda **_kwargs: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "save_report_text",
+        lambda *, content, output_path: output_path,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "inspect-field",
+            "--sport-code",
+            "BASEBALL",
+            "--event-id",
+            "123",
+            "--path",
+            "$.time_status",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert analyzed_arguments == [("baseball", "$.time_status", "123")]
+    assert "입력 Observation: 1개" in result.output
+    assert "분석 범위 이벤트: 1개" in result.output
+    assert "필드 관측 이벤트: 1개" in result.output
+    assert "미관측으로 생략한 이벤트: 0개" in result.output
+    assert f"필드 분석 보고서 저장 위치: {output_path}" in result.output
+
+
+def test_inspect_field_rejects_array_path_before_loading_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations_searched = False
+
+    def find_observations() -> list[Path]:
+        nonlocal observations_searched
+        observations_searched = True
+        return []
+
+    monkeypatch.setattr(cli, "find_event_observation_paths", find_observations)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "inspect-field",
+            "--sport-code",
+            "baseball",
+            "--path",
+            "$.incidents[]",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert not observations_searched
+    assert "배열을 포함한 필드 경로는 지원하지 않습니다." in result.output

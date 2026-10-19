@@ -333,6 +333,44 @@ uv run observer report
   endpoint 보고서에 남깁니다.
 - 설정 로드, 렌더링 또는 보고서 저장에 실패하면 종료 코드 `1`로 끝납니다.
 
+### `observer inspect-field`
+
+저장된 EventObservation과 원문을 사용하여 특정 JSON 필드의 값 변화를 이벤트별로
+분석하고 Markdown 보고서를 생성합니다. BETS API는 호출하지 않습니다.
+
+```bash
+uv run observer inspect-field \
+  --sport-code baseball \
+  --path '$.scores.10'
+```
+
+특정 이벤트만 분석하려면 `--event-id`를 추가합니다.
+
+```bash
+uv run observer inspect-field \
+  --sport-code baseball \
+  --event-id BETS_EVENT_ID \
+  --path '$.scores.10.home'
+```
+
+- `--sport-code`: `config/betsapi_sports.yaml`에 등록된 내부 종목 코드입니다.
+- `--path`: `$`, `$.field`, `$.field.child` 형식의 객체 경로입니다.
+- `--event-id`, `-e`: 생략하면 해당 종목의 저장된 전체 이벤트에서 요청 경로가 한 번
+  이상 관측된 이벤트를 분석합니다. 경로가 끝까지 나타나지 않은 이벤트는 본문에서
+  생략하고 개수만 분석 개요에 표시합니다.
+- 단일 값 경로는 최초 상태, 값 변경, 등장, 사라짐을 시간순으로 기록합니다.
+- 중첩 객체 경로는 모든 Observation에서 관측한 하위 단일 값 경로를 재귀적으로
+  펼쳐 각각의 타임라인을 생성하고, 객체 자체의 등장·사라짐도 보여줍니다.
+- 필드가 나중에 등장한 이벤트는 등장 전 `필드 없음` 상태부터 보여주지만, 모든
+  Observation에서 필드가 없었던 이벤트에는 별도의 타임라인을 만들지 않습니다.
+- 값이 `null`인 상태와 필드가 존재하지 않는 상태를 구분합니다.
+- 배열 경로는 지원하지 않습니다. 분석 중 배열 값이 발견된 Observation은 제외
+  내역에 남기고 나머지 자료를 계속 분석합니다.
+- 원문 또는 Observation 일부를 읽지 못해도 실패 상세를 보고서에 남기고 나머지
+  자료를 계속 분석합니다.
+- 잘못된 경로·종목·이벤트 입력은 종료 코드 `2`, 분석 대상 없음 또는 보고서 생성
+  실패는 종료 코드 `1`로 끝납니다.
+
 ## 다중 이벤트 처리 원칙
 
 - **Capture**는 Event View API 요청 한 번의 기록입니다. 요청 전체의 원문과 HTTP·분석 메타데이터를 한 번만 저장합니다.
@@ -374,7 +412,8 @@ reports/
 └── event-view/YYYY-MM-DD/
     ├── {generated_at}_endpoint.md
     ├── {generated_at}_sport_{sport_code}.md
-    └── {generated_at}_sport_unclassified.md
+    ├── {generated_at}_sport_unclassified.md
+    └── field/{sport_code}/{generated_at}_{field_path}.md
 ```
 
 보고서 파일명에는 UTC 생성 시각이 `YYYYMMDDTHHMMSSffffffZ` 형식으로 들어갑니다.
