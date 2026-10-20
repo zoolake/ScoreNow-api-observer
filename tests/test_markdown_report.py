@@ -14,11 +14,15 @@ from scorenow_api_observer.reporting.field_inspection import (
 from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
     render_field_inspection_markdown,
+    render_league_report_markdown,
     render_sport_report_markdown,
 )
 from scorenow_api_observer.reporting.models import (
     CaptureMetadataLoadFailure,
     EventViewReportAnalysis,
+    LeagueFieldSummary,
+    LeagueObservationSummary,
+    LeagueTrackedFieldSummary,
     ObservedEventResolutionFailure,
     ResponseAnalysisStatusSummary,
     ResponseIssueSummary,
@@ -392,6 +396,100 @@ def test_render_sport_report_markdown_describes_sport_without_fields() -> None:
 
     assert "| 0 | 0 |" in result
     assert "관측된 필드가 없습니다." in result
+
+
+def test_render_sport_report_markdown_renders_league_comparison_and_empty_samples() -> (
+    None
+):
+    analysis = EventViewReportAnalysis(
+        response_analysis_status_summaries=[],
+        response_issue_summaries=[],
+        sport_observation_summaries=[SportObservationSummary("baseball", 3, 2)],
+        capture_metadata_load_failures=[],
+        observed_event_resolution_failures=[],
+        sport_field_summaries=[
+            SportFieldSummary("baseball", "$.time_status", {"integer"}, 2, 1, 1, 0)
+        ],
+        league_observation_summaries=[
+            LeagueObservationSummary("baseball", "225", "mlb", True, 2, 1),
+            LeagueObservationSummary("baseball", "349", "kbo", True, 1, 1),
+            LeagueObservationSummary("baseball", "347", "npb", True, 0, 0),
+        ],
+        league_field_summaries=[
+            LeagueFieldSummary(
+                "baseball", "225", "$.time_status", {"integer"}, 2, 1, 0, 0
+            ),
+            LeagueFieldSummary("baseball", "349", "$.time_status", set(), 0, 0, 0, 1),
+        ],
+    )
+
+    result = render_sport_report_markdown(
+        analysis=analysis,
+        sport_code="baseball",
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+        league_report_links_by_id={
+            "225": "league/baseball/mlb.md",
+            "349": "league/baseball/kbo.md",
+        },
+    )
+
+    assert "## 리그별 필드 제공 비교" in result
+    assert "[mlb (`225`)](league/baseball/mlb.md)" in result
+    assert "[kbo (`349`)](league/baseball/kbo.md)" in result
+    assert "🟢 항상<br>Observation 2/2<br>이벤트 1/1" in result
+    assert "⚪ 미제공<br>Observation 0/1<br>이벤트 0/1" in result
+    assert "### 표본이 없는 설정 리그" in result
+    assert "- `npb` (`347`)" in result
+
+
+def test_render_league_report_markdown_renders_scoped_fields_and_values() -> None:
+    analysis = EventViewReportAnalysis(
+        response_analysis_status_summaries=[],
+        response_issue_summaries=[],
+        sport_observation_summaries=[],
+        capture_metadata_load_failures=[],
+        observed_event_resolution_failures=[],
+        sport_field_summaries=[],
+        league_observation_summaries=[
+            LeagueObservationSummary("baseball", "349", "kbo", True, 3, 2)
+        ],
+        league_field_summaries=[
+            LeagueFieldSummary(
+                "baseball", "349", "$.scores.ot", {"string"}, 1, 0, 1, 1
+            ),
+            LeagueFieldSummary("football", "94", "$.ignored", {"string"}, 1, 1, 0, 0),
+        ],
+        league_tracked_field_summaries=[
+            LeagueTrackedFieldSummary(
+                sport_code="baseball",
+                league_id="349",
+                path="$.time_status",
+                value_summaries=[
+                    TrackedFieldValueSummary("integer", True, 1, 2, 1),
+                    TrackedFieldValueSummary("integer", True, 3, 1, 1),
+                ],
+                unsupported_type_summaries=[],
+            )
+        ],
+    )
+
+    result = render_league_report_markdown(
+        analysis=analysis,
+        sport_code="baseball",
+        league_id="349",
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+    )
+
+    assert result.startswith("# Event View 리그 상세 보고서\n")
+    assert "- 리그 ID: `349`" in result
+    assert "- 설정 label: `kbo`" in result
+    assert "- 설정 등록 여부: 등록" in result
+    assert "| 3 | 2 |" in result
+    assert "| $.scores.ot | string | 1 | 0 | 1 | 1 |" in result
+    assert "$.ignored" not in result
+    assert "### `$.time_status`" in result
+    assert "| integer | 3 | 1 | 1 |" in result
+    assert "관측된 API 리그명" not in result
 
 
 def test_render_sport_report_markdown_renders_unclassified_sport() -> None:

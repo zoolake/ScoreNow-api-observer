@@ -31,8 +31,8 @@ def test_load_upcoming_targets_reads_default_config() -> None:
     assert targets[0] == UpcomingTarget(
         sport_id="1",
         sport_code="football",
-        league_id="8914",
-        league_label="k-league-2",
+        league_id="1040",
+        league_label="uefa-champions-league",
     )
     assert targets[-1] == UpcomingTarget(
         sport_id="16",

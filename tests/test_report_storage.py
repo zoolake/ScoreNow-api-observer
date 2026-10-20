@@ -7,6 +7,7 @@ import pytest
 from scorenow_api_observer.reporting.storage import (
     ReportFormat,
     build_field_report_output_path,
+    build_league_report_output_path,
     build_report_output_path,
     save_report_text,
 )
@@ -110,3 +111,38 @@ def test_build_field_report_output_path_uses_sport_directory_and_safe_path(
         / "baseball"
         / "20261020T123000000000Z_scores.10.home.md"
     )
+
+
+def test_build_league_report_output_path_uses_sport_and_league_directory(
+    tmp_path: Path,
+) -> None:
+    result = build_league_report_output_path(
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+        sport_code="baseball",
+        league_id="349",
+        league_label="kbo",
+        base_directory=tmp_path / "reports",
+    )
+
+    assert result == (
+        tmp_path
+        / "reports"
+        / "2026-10-20"
+        / "league"
+        / "baseball"
+        / "20261020T123000000000Z_349-kbo.md"
+    )
+
+
+def test_build_league_report_output_path_handles_unclassified_league(
+    tmp_path: Path,
+) -> None:
+    result = build_league_report_output_path(
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+        sport_code="football",
+        league_id=None,
+        league_label="unclassified",
+        base_directory=tmp_path,
+    )
+
+    assert result.name == "20261020T123000000000Z_unclassified.md"

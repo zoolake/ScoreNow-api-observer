@@ -206,6 +206,90 @@ class SportTrackedFieldSummary:
 
 
 @dataclass(frozen=True)
+class LeagueDefinition:
+    """보고서에서 사용할 설정 리그의 안정적인 식별 정보입니다.
+
+    Attributes:
+        sport_code: 리그가 속한 내부 종목 코드입니다.
+        league_id: 외부 API에서 사용하는 리그 ID입니다.
+        label: 설정 파일에 정의한 사람이 읽을 수 있는 안정적인 label입니다.
+    """
+
+    sport_code: str
+    league_id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class LeagueObservationSummary:
+    """종목 안의 리그 하나에 해당하는 이벤트 관측 현황입니다.
+
+    Attributes:
+        sport_code: 리그가 속한 내부 종목 코드입니다.
+        league_id: 외부 API 리그 ID입니다. 분류할 수 없으면 None입니다.
+        label: 보고서에서 리그를 표시할 안정적인 label입니다.
+        configured: 리그가 조회 대상 설정에 등록되어 있는지 나타냅니다.
+        observation_count: 해당 리그로 분류된 전체 Observation 수입니다.
+        unique_event_count: 해당 리그에서 관측한 고유 이벤트 ID 수입니다.
+    """
+
+    sport_code: str
+    league_id: str | None
+    label: str
+    configured: bool
+    observation_count: int
+    unique_event_count: int
+
+
+@dataclass(frozen=True)
+class LeagueFieldSummary:
+    """리그 하나에서 관측한 JSON 필드 경로의 제공 현황입니다.
+
+    Attributes:
+        sport_code: 리그가 속한 내부 종목 코드입니다.
+        league_id: 외부 API 리그 ID입니다. 분류할 수 없으면 None입니다.
+        path: 이벤트 JSON에서 관측한 필드 경로입니다.
+        observed_types: 해당 리그의 경로에서 관측한 JSON 자료형입니다.
+        present_observation_count: 해당 경로가 존재한 Observation 수입니다.
+        always_present_event_count: 모든 Observation에서 해당 경로가 존재한 고유
+            이벤트 수입니다.
+        sometimes_present_event_count: 일부 Observation에서만 해당 경로가 존재한
+            고유 이벤트 수입니다.
+        never_present_event_count: 어떤 Observation에서도 해당 경로가 존재하지 않은
+            고유 이벤트 수입니다.
+    """
+
+    sport_code: str
+    league_id: str | None
+    path: str
+    observed_types: set[str]
+    present_observation_count: int
+    always_present_event_count: int
+    sometimes_present_event_count: int
+    never_present_event_count: int
+
+
+@dataclass(frozen=True)
+class LeagueTrackedFieldSummary:
+    """리그 하나의 설정된 JSON 경로에서 관측한 값과 제외 현황입니다.
+
+    Attributes:
+        sport_code: 리그가 속한 내부 종목 코드입니다.
+        league_id: 외부 API 리그 ID입니다. 분류할 수 없으면 None입니다.
+        path: 값을 집계한 JSON 객체 경로입니다.
+        value_summaries: 필드 누락을 포함한 단일 값별 집계입니다.
+        unsupported_type_summaries: 객체·배열이라 값 집계에서 제외한 자료형별
+            현황입니다.
+    """
+
+    sport_code: str
+    league_id: str | None
+    path: str
+    value_summaries: list[TrackedFieldValueSummary]
+    unsupported_type_summaries: list[TrackedFieldUnsupportedTypeSummary]
+
+
+@dataclass(frozen=True)
 class EventViewReportAnalysis:
     """저장된 Event View 자료를 보고서용으로 집계한 결과입니다.
 
@@ -219,6 +303,12 @@ class EventViewReportAnalysis:
         sport_field_summaries: 종목·JSON 경로별 자료형과 필드 제공 현황입니다.
         sport_tracked_field_summaries: 설정된 종목·JSON 경로별 값과 집계 제외
             자료형 현황입니다.
+        league_observation_summaries: 설정 리그와 실제 관측 리그의 Observation 및
+            고유 이벤트 집계입니다.
+        league_field_summaries: 종목·리그·JSON 경로별 자료형과 필드 제공
+            현황입니다.
+        league_tracked_field_summaries: 설정된 종목·JSON 경로의 리그별 값과 집계
+            제외 자료형 현황입니다.
         capture_metadata_load_failures: 읽지 못한 CaptureMetadata 파일 기록입니다.
         observed_event_resolution_failures: 해석하지 못한 EventObservation 파일
             기록입니다.
@@ -231,5 +321,12 @@ class EventViewReportAnalysis:
     observed_event_resolution_failures: list[ObservedEventResolutionFailure]
     sport_field_summaries: list[SportFieldSummary]
     sport_tracked_field_summaries: list[SportTrackedFieldSummary] = field(
+        default_factory=list
+    )
+    league_observation_summaries: list[LeagueObservationSummary] = field(
+        default_factory=list
+    )
+    league_field_summaries: list[LeagueFieldSummary] = field(default_factory=list)
+    league_tracked_field_summaries: list[LeagueTrackedFieldSummary] = field(
         default_factory=list
     )

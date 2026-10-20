@@ -32,6 +32,8 @@ from scorenow_api_observer.reporting.field_inspection import (
 from scorenow_api_observer.reporting.models import (
     CaptureMetadataLoadFailure,
     EventViewReportAnalysis,
+    LeagueDefinition,
+    LeagueObservationSummary,
     ObservedEventResolutionFailure,
     ObservedEventResolutionResult,
     SportObservationSummary,
@@ -39,6 +41,7 @@ from scorenow_api_observer.reporting.models import (
 from scorenow_api_observer.reporting.tracked_field_config import (
     TrackedFieldsConfig,
 )
+from scorenow_api_observer.upcoming.targets import UpcomingTarget
 
 
 class _FakeSettings:
@@ -575,15 +578,25 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
             )
         ],
         sport_field_summaries=[],
+        league_observation_summaries=[
+            LeagueObservationSummary("baseball", "225", "mlb", True, 2, 1)
+        ],
     )
     tracked_field_paths = {
         "baseball": ("$.time_status",),
         "football": ("$.timer.md", "$.time_status"),
     }
     analyzed_arguments: list[
-        tuple[list[Path], list[Path], dict[str, str], dict[str, tuple[str, ...]]]
+        tuple[
+            list[Path],
+            list[Path],
+            dict[str, str],
+            dict[str, tuple[str, ...]],
+            list[LeagueDefinition],
+        ]
     ] = []
-    rendered_sports: list[tuple[str | None, datetime]] = []
+    rendered_sports: list[tuple[str | None, datetime, dict[str | None, str]]] = []
+    rendered_leagues: list[tuple[str, str | None, datetime]] = []
     built_report_names: list[str] = []
     saved_reports: list[tuple[str, Path]] = []
 
@@ -599,6 +612,7 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         observation_file_paths: list[Path],
         sport_code_by_id: dict[str, str],
         tracked_field_paths_by_sport_code: dict[str, tuple[str, ...]],
+        league_definitions: list[LeagueDefinition],
     ) -> EventViewReportAnalysis:
         analyzed_arguments.append(
             (
@@ -606,6 +620,7 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
                 observation_file_paths,
                 sport_code_by_id,
                 tracked_field_paths_by_sport_code,
+                league_definitions,
             )
         )
         return analysis
@@ -615,10 +630,22 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         analysis: EventViewReportAnalysis,
         sport_code: str | None,
         generated_at: datetime,
+        league_report_links_by_id: dict[str | None, str],
     ) -> str:
         assert analysis is not None
-        rendered_sports.append((sport_code, generated_at))
+        rendered_sports.append((sport_code, generated_at, league_report_links_by_id))
         return f"sport report: {sport_code}\n"
+
+    def render_league_report(
+        *,
+        analysis: EventViewReportAnalysis,
+        sport_code: str,
+        league_id: str | None,
+        generated_at: datetime,
+    ) -> str:
+        assert analysis is not None
+        rendered_leagues.append((sport_code, league_id, generated_at))
+        return f"league report: {sport_code}/{league_id}\n"
 
     def build_output_path(*, generated_at: datetime, report_name: str) -> Path:
         assert generated_at == datetime(2026, 9, 24, 12, 30, tzinfo=UTC)
@@ -643,6 +670,11 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         "load_tracked_fields_config",
         lambda: TrackedFieldsConfig(paths_by_sport_code=tracked_field_paths),
     )
+    monkeypatch.setattr(
+        cli,
+        "load_upcoming_targets",
+        lambda: [UpcomingTarget("16", "baseball", "225", "mlb")],
+    )
     monkeypatch.setattr(cli, "analyze_event_view_report", analyze_report)
     monkeypatch.setattr(
         cli,
@@ -650,20 +682,39 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         lambda **_kwargs: "endpoint report\n",
     )
     monkeypatch.setattr(cli, "render_sport_report_markdown", render_sport_report)
+    monkeypatch.setattr(cli, "render_league_report_markdown", render_league_report)
     monkeypatch.setattr(cli, "build_report_output_path", build_output_path)
+    monkeypatch.setattr(
+        cli,
+        "build_league_report_output_path",
+        lambda *, generated_at, sport_code, league_id, league_label: (
+            Path("reports") / "league" / sport_code / f"{league_id}-{league_label}.md"
+        ),
+    )
     monkeypatch.setattr(cli, "save_report_text", save_report)
 
     result = CliRunner().invoke(cli.app, ["report"])
 
     assert result.exit_code == 0
     assert analyzed_arguments == [
-        (metadata_paths, observation_paths, sport_code_by_id, tracked_field_paths)
+        (
+            metadata_paths,
+            observation_paths,
+            sport_code_by_id,
+            tracked_field_paths,
+            [LeagueDefinition("baseball", "225", "mlb")],
+        )
     ]
     assert rendered_sports == [
-        ("baseball", generated_at),
-        ("football", generated_at),
-        (None, generated_at),
+        (
+            "baseball",
+            generated_at,
+            {"225": "league/baseball/225-mlb.md"},
+        ),
+        ("football", generated_at, {}),
+        (None, generated_at, {}),
     ]
+    assert rendered_leagues == [("baseball", "225", generated_at)]
     assert built_report_names == [
         "endpoint",
         "sport_baseball",
@@ -675,9 +726,11 @@ def test_report_creates_endpoint_and_all_sport_reports_offline(
         Path("reports/sport_baseball.md"),
         Path("reports/sport_football.md"),
         Path("reports/sport_unclassified.md"),
+        Path("reports/league/baseball/225-mlb.md"),
     ]
     assert "endpoint 보고서 저장 위치: reports/endpoint.md" in result.output
     assert "sport_unclassified 보고서 저장 위치" in result.output
+    assert "league_baseball_mlb 보고서 저장 위치" in result.output
     assert "일부 저장 파일을 분석하지 못했습니다." in result.output
     assert "CaptureMetadata 1건, EventObservation 1건" in result.output
 

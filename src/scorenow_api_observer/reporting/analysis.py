@@ -16,6 +16,10 @@ from scorenow_api_observer.reporting.field_path import (
 )
 from scorenow_api_observer.reporting.models import (
     EventViewReportAnalysis,
+    LeagueDefinition,
+    LeagueFieldSummary,
+    LeagueObservationSummary,
+    LeagueTrackedFieldSummary,
     ObservedEvent,
     ResponseAnalysisStatusSummary,
     ResponseIssueSummary,
@@ -151,6 +155,7 @@ def analyze_event_view_report(
     observation_file_paths: list[Path],
     sport_code_by_id: dict[str, str],
     tracked_field_paths_by_sport_code: dict[str, tuple[str, ...]] | None = None,
+    league_definitions: list[LeagueDefinition] | None = None,
 ) -> EventViewReportAnalysis:
     """저장된 Event View 자료를 읽어 보고서용 분석 결과를 만듭니다.
 
@@ -182,6 +187,19 @@ def analyze_event_view_report(
         observed_events=observed_event_resolution_result.observed_events,
         paths_by_sport_code=tracked_field_paths_by_sport_code or {},
     )
+    league_observation_summaries = summarize_league_observations(
+        observed_events=observed_event_resolution_result.observed_events,
+        league_definitions=league_definitions or [],
+    )
+    league_field_summaries = summarize_league_fields(
+        observed_events=observed_event_resolution_result.observed_events,
+        league_observation_summaries=league_observation_summaries,
+    )
+    league_tracked_field_summaries = summarize_league_tracked_field_values(
+        observed_events=observed_event_resolution_result.observed_events,
+        league_observation_summaries=league_observation_summaries,
+        paths_by_sport_code=tracked_field_paths_by_sport_code or {},
+    )
 
     return EventViewReportAnalysis(
         response_analysis_status_summaries=status_summaries,
@@ -191,6 +209,9 @@ def analyze_event_view_report(
         observed_event_resolution_failures=(observed_event_resolution_result.failures),
         sport_field_summaries=sport_field_summaries,
         sport_tracked_field_summaries=sport_tracked_field_summaries,
+        league_observation_summaries=league_observation_summaries,
+        league_field_summaries=league_field_summaries,
+        league_tracked_field_summaries=league_tracked_field_summaries,
     )
 
 
@@ -287,6 +308,205 @@ def summarize_sport_fields(
     return result
 
 
+def extract_event_league_id(event_data: dict[str, object]) -> str | None:
+    """이벤트의 유효한 문자열 league.id를 반환하고 분류 불가면 None을 반환합니다."""
+
+    league = event_data.get("league")
+    if not isinstance(league, dict):
+        return None
+
+    league_id = league.get("id")
+    if not isinstance(league_id, str):
+        return None
+
+    normalized_league_id = league_id.strip()
+    return normalized_league_id or None
+
+
+def summarize_league_observations(
+    *,
+    observed_events: list[ObservedEvent],
+    league_definitions: list[LeagueDefinition],
+) -> list[LeagueObservationSummary]:
+    """설정 순서를 보존하여 리그별 Observation과 고유 이벤트를 집계합니다.
+
+    설정 리그는 표본이 없어도 0건으로 포함합니다. 유효한 ID를 가진 미등록 리그는
+    설정 리그 뒤에 ID 순으로 추가하고, ID를 분류할 수 없는 표본은 종목별
+    unclassified 항목으로 마지막에 추가합니다. 종목을 분류할 수 없는 Observation은
+    리그 집계에서 제외합니다.
+    """
+
+    observation_counts_by_key: dict[tuple[str, str | None], int] = {}
+    event_ids_by_key: dict[tuple[str, str | None], set[str]] = {}
+
+    for definition in league_definitions:
+        key = (definition.sport_code, definition.league_id)
+        observation_counts_by_key.setdefault(key, 0)
+        event_ids_by_key.setdefault(key, set())
+
+    for observed_event in observed_events:
+        if observed_event.sport_code is None:
+            continue
+
+        league_id = extract_event_league_id(observed_event.event_data)
+        key = (observed_event.sport_code, league_id)
+        observation_counts_by_key[key] = observation_counts_by_key.get(key, 0) + 1
+        event_ids_by_key.setdefault(key, set()).add(observed_event.event_id)
+
+    configured_keys = {
+        (definition.sport_code, definition.league_id)
+        for definition in league_definitions
+    }
+    summaries = [
+        LeagueObservationSummary(
+            sport_code=definition.sport_code,
+            league_id=definition.league_id,
+            label=definition.label,
+            configured=True,
+            observation_count=observation_counts_by_key[
+                (definition.sport_code, definition.league_id)
+            ],
+            unique_event_count=len(
+                event_ids_by_key[(definition.sport_code, definition.league_id)]
+            ),
+        )
+        for definition in league_definitions
+    ]
+
+    unregistered_keys = sorted(
+        (
+            key
+            for key in observation_counts_by_key
+            if key not in configured_keys and key[1] is not None
+        ),
+        key=lambda key: (key[0], key[1] or ""),
+    )
+    for sport_code, league_id in unregistered_keys:
+        assert league_id is not None
+        summaries.append(
+            LeagueObservationSummary(
+                sport_code=sport_code,
+                league_id=league_id,
+                label=f"league-{league_id}",
+                configured=False,
+                observation_count=observation_counts_by_key[(sport_code, league_id)],
+                unique_event_count=len(event_ids_by_key[(sport_code, league_id)]),
+            )
+        )
+
+    unclassified_keys = sorted(
+        (key for key in observation_counts_by_key if key[1] is None),
+        key=lambda key: key[0],
+    )
+    for sport_code, league_id in unclassified_keys:
+        summaries.append(
+            LeagueObservationSummary(
+                sport_code=sport_code,
+                league_id=league_id,
+                label="unclassified",
+                configured=False,
+                observation_count=observation_counts_by_key[(sport_code, league_id)],
+                unique_event_count=len(event_ids_by_key[(sport_code, league_id)]),
+            )
+        )
+
+    return summaries
+
+
+def summarize_league_fields(
+    *,
+    observed_events: list[ObservedEvent],
+    league_observation_summaries: list[LeagueObservationSummary],
+) -> list[LeagueFieldSummary]:
+    """종목에서 관측된 모든 JSON 경로의 제공 현황을 리그별로 집계합니다.
+
+    각 종목의 경로 합집합을 사용하므로 한 리그에서만 발견된 경로도 같은 종목의
+    다른 리그에는 미제공으로 집계됩니다. 표본이 없는 설정 리그는 제외합니다.
+    """
+
+    observation_counts_by_event: dict[tuple[str, str | None, str], int] = {}
+    observation_counts_by_path: dict[tuple[str, str | None, str, str], int] = {}
+    types_by_path: dict[tuple[str, str | None, str], set[str]] = {}
+    paths_by_sport_code: dict[str, set[str]] = {}
+
+    for observed_event in observed_events:
+        sport_code = observed_event.sport_code
+        if sport_code is None:
+            continue
+
+        league_id = extract_event_league_id(observed_event.event_data)
+        event_key = (sport_code, league_id, observed_event.event_id)
+        observation_counts_by_event[event_key] = (
+            observation_counts_by_event.get(event_key, 0) + 1
+        )
+
+        structure = extract_json_structure(observed_event.event_data)
+        for path, observed_types in structure.items():
+            if path == "$":
+                continue
+
+            paths_by_sport_code.setdefault(sport_code, set()).add(path)
+            path_key = (sport_code, league_id, observed_event.event_id, path)
+            observation_counts_by_path[path_key] = (
+                observation_counts_by_path.get(path_key, 0) + 1
+            )
+            types_by_path.setdefault((sport_code, league_id, path), set()).update(
+                observed_types
+            )
+
+    result: list[LeagueFieldSummary] = []
+    for league_summary in league_observation_summaries:
+        if league_summary.observation_count == 0:
+            continue
+
+        sport_code = league_summary.sport_code
+        league_id = league_summary.league_id
+        league_event_totals = {
+            event_id: total
+            for (event_sport_code, event_league_id, event_id), total in (
+                observation_counts_by_event.items()
+            )
+            if event_sport_code == sport_code and event_league_id == league_id
+        }
+
+        for path in sorted(paths_by_sport_code.get(sport_code, set())):
+            present_observation_count = 0
+            always_count = 0
+            sometimes_count = 0
+            never_count = 0
+
+            for event_id, total in league_event_totals.items():
+                present = observation_counts_by_path.get(
+                    (sport_code, league_id, event_id, path),
+                    0,
+                )
+                present_observation_count += present
+
+                if present == total:
+                    always_count += 1
+                elif present > 0:
+                    sometimes_count += 1
+                else:
+                    never_count += 1
+
+            result.append(
+                LeagueFieldSummary(
+                    sport_code=sport_code,
+                    league_id=league_id,
+                    path=path,
+                    observed_types=types_by_path.get(
+                        (sport_code, league_id, path), set()
+                    ),
+                    present_observation_count=present_observation_count,
+                    always_present_event_count=always_count,
+                    sometimes_present_event_count=sometimes_count,
+                    never_present_event_count=never_count,
+                )
+            )
+
+    return result
+
+
 def summarize_tracked_field_values(
     *,
     observed_events: list[ObservedEvent],
@@ -318,6 +538,56 @@ def summarize_tracked_field_values(
                     sport_code=sport_code,
                     path=path,
                     path_keys=path_keys,
+                )
+            )
+
+    return summaries
+
+
+def summarize_league_tracked_field_values(
+    *,
+    observed_events: list[ObservedEvent],
+    league_observation_summaries: list[LeagueObservationSummary],
+    paths_by_sport_code: dict[str, tuple[str, ...]],
+) -> list[LeagueTrackedFieldSummary]:
+    """설정된 단일 값 JSON 경로의 상태를 표본이 있는 리그별로 집계합니다."""
+
+    events_by_league: dict[tuple[str, str | None], list[ObservedEvent]] = {}
+    for observed_event in observed_events:
+        if observed_event.sport_code is None:
+            continue
+
+        key = (
+            observed_event.sport_code,
+            extract_event_league_id(observed_event.event_data),
+        )
+        events_by_league.setdefault(key, []).append(observed_event)
+
+    summaries: list[LeagueTrackedFieldSummary] = []
+    for league_summary in league_observation_summaries:
+        if league_summary.observation_count == 0:
+            continue
+
+        sport_code = league_summary.sport_code
+        league_id = league_summary.league_id
+        league_events = events_by_league[(sport_code, league_id)]
+        for path in paths_by_sport_code.get(sport_code, ()):
+            path_keys = validate_field_path(path)
+            sport_summary = _summarize_tracked_field(
+                observed_events=league_events,
+                sport_code=sport_code,
+                path=path,
+                path_keys=path_keys,
+            )
+            summaries.append(
+                LeagueTrackedFieldSummary(
+                    sport_code=sport_code,
+                    league_id=league_id,
+                    path=path,
+                    value_summaries=sport_summary.value_summaries,
+                    unsupported_type_summaries=(
+                        sport_summary.unsupported_type_summaries
+                    ),
                 )
             )
 

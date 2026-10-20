@@ -9,6 +9,33 @@
 | ---: | ---: |
 | {{ sport_observation_summary.observation_count }} | {{ sport_observation_summary.unique_event_count }} |
 
+## 리그별 필드 제공 비교
+
+리그별 상태는 Observation 기준입니다. 이벤트 수는 해당 필드가 한 번 이상 존재한
+고유 이벤트 수를 나타냅니다. 값이 `null`이어도 필드는 존재한 것으로 집계합니다.
+
+{% if sport_code is none -%}
+종목을 분류할 수 없는 Observation은 리그별로 비교하지 않습니다.
+{% elif league_comparison_columns and league_comparison_rows -%}
+| 필드 경로 |{% for column in league_comparison_columns %} {% if column.report_link %}[{{ column.summary.label | markdown_table_cell }}{% if column.summary.league_id is not none %} (`{{ column.summary.league_id | markdown_table_cell }}`){% endif %}]({{ column.report_link }}){% else %}{{ column.summary.label | markdown_table_cell }}{% if column.summary.league_id is not none %} (`{{ column.summary.league_id | markdown_table_cell }}`){% endif %}{% endif %} |{% endfor %}
+| --- |{% for column in league_comparison_columns %} --- |{% endfor %}
+{% for row in league_comparison_rows -%}
+| {{ row.path | markdown_table_cell }} |{% for cell in row.cells %} {{ cell.status_icon }} {{ cell.status_label }}<br>Observation {{ cell.present_observation_count }}/{{ cell.total_observation_count }}<br>이벤트 {{ cell.present_event_count }}/{{ cell.total_event_count }} |{% endfor %}
+{% endfor -%}
+{% else -%}
+비교할 수 있는 리그별 Observation 또는 필드가 없습니다.
+{% endif %}
+
+{% if sport_code is not none and unobserved_configured_leagues -%}
+### 표본이 없는 설정 리그
+
+다음 리그는 설정에 등록되어 있지만 분석할 Observation이 없습니다.
+
+{% for league in unobserved_configured_leagues -%}
+- `{{ league.label }}` (`{{ league.league_id }}`)
+{% endfor %}
+{% endif %}
+
 ## 필드 제공 현황
 
 필드 존재 횟수는 Observation 기준이며, 항상·일부·미제공은 고유 이벤트 기준입니다.

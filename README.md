@@ -171,7 +171,8 @@ uv run observer report
 
 이 명령은 API를 호출하지 않고 현재 저장된 CaptureMetadata와 EventObservation을 모두
 분석합니다. endpoint 전체 보고서와 등록된 각 종목의 보고서, 종목을 분류할 수 없는
-Observation 보고서를 같은 UTC 생성 시각으로 저장합니다.
+Observation 보고서를 같은 UTC 생성 시각으로 저장합니다. 종목 보고서에는 리그별 필드
+제공 비교가 포함되고, 표본이 있는 각 리그에는 별도의 상세 보고서를 생성합니다.
 
 ## 명령어
 
@@ -340,13 +341,32 @@ sports:
 - endpoint 보고서에는 파일 처리 현황, 응답 분석 상태·이슈, 종목별 표본과 분석 실패
   상세가 포함됩니다.
 - 종목별 보고서에는 Observation·고유 이벤트 수, 필드별 자료형·제공 현황과 설정된
-  필드의 값별 Observation·고유 이벤트 수가 포함됩니다.
+  필드의 값별 Observation·고유 이벤트 수가 포함됩니다. 또한 `league.id`를 기준으로
+  모든 관측 필드의 리그별 항상·일부·미제공 상태를 비교합니다.
+- 리그 ID와 표시 순서는
+  [`config/betsapi_upcoming_targets.yaml`](config/betsapi_upcoming_targets.yaml)의
+  설정을 사용합니다. 유효한 미등록 리그도 분석하며, ID를 분류할 수 없는
+  Observation은 종목별 `unclassified` 리그로 집계합니다.
+- 표본이 있는 리그에는 해당 리그 범위의 필드 제공 현황과 추적 필드 값 현황을 담은
+  상세 보고서를 생성합니다. 설정에는 있지만 표본이 없는 리그는 종목 보고서에 별도
+  목록으로 표시하고 상세 보고서는 만들지 않습니다.
 - 값 집계는 문자열·정수·실수·boolean·`null`·필드 누락을 서로 다른 상태로
   구분합니다. 객체와 배열은 하나의 값으로 집계하지 않고 제외 현황을 표시합니다.
 - 관측값이 없는 등록 종목과 `unclassified` 보고서도 생성합니다.
 - 일부 저장 파일을 읽거나 해석하지 못해도 나머지 자료를 분석하고, 실패 상세는
   endpoint 보고서에 남깁니다.
 - 설정 로드, 렌더링 또는 보고서 저장에 실패하면 종료 코드 `1`로 끝납니다.
+
+보고서는 다음 경로에 저장합니다.
+
+```text
+reports/event-view/{UTC 생성 날짜}/
+├── {generated_at}_endpoint.md
+├── {generated_at}_sport_{sport_code}.md
+└── league/{sport_code}/
+    ├── {generated_at}_{league_id}-{league_label}.md
+    └── {generated_at}_unclassified.md
+```
 
 ### `observer inspect-field`
 

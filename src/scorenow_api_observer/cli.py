@@ -43,11 +43,14 @@ from scorenow_api_observer.reporting.field_path import (
 from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
     render_field_inspection_markdown,
+    render_league_report_markdown,
     render_sport_report_markdown,
 )
+from scorenow_api_observer.reporting.models import LeagueDefinition
 from scorenow_api_observer.reporting.sources import resolve_observed_events
 from scorenow_api_observer.reporting.storage import (
     build_field_report_output_path,
+    build_league_report_output_path,
     build_report_output_path,
     save_report_text,
 )
@@ -509,6 +512,15 @@ def report() -> None:
     try:
         sport_code_by_id = load_sport_codes_by_id()
         tracked_fields_config = load_tracked_fields_config()
+        upcoming_targets = load_upcoming_targets()
+        league_definitions = [
+            LeagueDefinition(
+                sport_code=target.sport_code,
+                league_id=target.league_id,
+                label=target.league_label,
+            )
+            for target in upcoming_targets
+        ]
         analysis = analyze_event_view_report(
             metadata_file_paths=find_capture_metadata_paths(),
             observation_file_paths=find_event_observation_paths(),
@@ -516,42 +528,47 @@ def report() -> None:
             tracked_field_paths_by_sport_code=(
                 tracked_fields_config.paths_by_sport_code
             ),
+            league_definitions=league_definitions,
         )
         generated_at = datetime.now(UTC)
 
-        # 보고서 리스트 초기화 및 엔드포인트 보고서 추가
-        rendered_reports: list[tuple[str, str]] = [
+        report_output_paths: list[tuple[str, Path]] = [
             (
                 "endpoint",
-                render_endpoint_report_markdown(
-                    analysis=analysis,
+                build_report_output_path(
                     generated_at=generated_at,
+                    report_name="endpoint",
                 ),
             )
         ]
-
-        # 종목별 보고서 추가
+        sport_report_paths: dict[str | None, Path] = {}
         for summary in analysis.sport_observation_summaries:
             sport_code = summary.sport_code
             sport_name = sport_code if sport_code is not None else "unclassified"
-            rendered_reports.append(
-                (
-                    f"sport_{sport_name}",
-                    render_sport_report_markdown(
-                        analysis=analysis,
-                        sport_code=sport_code,
-                        generated_at=generated_at,
-                    ),
-                )
-            )
-
-        output_paths = [
-            build_report_output_path(
+            report_name = f"sport_{sport_name}"
+            output_path = build_report_output_path(
                 generated_at=generated_at,
                 report_name=report_name,
             )
-            for report_name, _ in rendered_reports
-        ]
+            sport_report_paths[sport_code] = output_path
+            report_output_paths.append((report_name, output_path))
+
+        league_report_paths: dict[tuple[str, str | None], Path] = {}
+        for summary in analysis.league_observation_summaries:
+            if summary.observation_count == 0:
+                continue
+
+            report_name = f"league_{summary.sport_code}_{summary.label}"
+            output_path = build_league_report_output_path(
+                generated_at=generated_at,
+                sport_code=summary.sport_code,
+                league_id=summary.league_id,
+                league_label=summary.label,
+            )
+            league_report_paths[(summary.sport_code, summary.league_id)] = output_path
+            report_output_paths.append((report_name, output_path))
+
+        output_paths = [output_path for _, output_path in report_output_paths]
 
         # 중복 여부 검증
         if len(output_paths) != len(set(output_paths)):
@@ -564,12 +581,64 @@ def report() -> None:
         if existing_paths:
             raise FileExistsError(f"보고서 파일이 이미 존재합니다: {existing_paths[0]}")
 
+        rendered_reports: list[tuple[str, str]] = [
+            (
+                "endpoint",
+                render_endpoint_report_markdown(
+                    analysis=analysis,
+                    generated_at=generated_at,
+                ),
+            )
+        ]
+        for summary in analysis.sport_observation_summaries:
+            sport_code = summary.sport_code
+            sport_name = sport_code if sport_code is not None else "unclassified"
+            links_by_league_id: dict[str | None, str] = {}
+            if sport_code is not None:
+                sport_report_directory = sport_report_paths[sport_code].parent
+                links_by_league_id = {
+                    league_id: path.relative_to(sport_report_directory).as_posix()
+                    for (league_sport_code, league_id), path in (
+                        league_report_paths.items()
+                    )
+                    if league_sport_code == sport_code
+                }
+
+            rendered_reports.append(
+                (
+                    f"sport_{sport_name}",
+                    render_sport_report_markdown(
+                        analysis=analysis,
+                        sport_code=sport_code,
+                        generated_at=generated_at,
+                        league_report_links_by_id=links_by_league_id,
+                    ),
+                )
+            )
+
+        for summary in analysis.league_observation_summaries:
+            if summary.observation_count == 0:
+                continue
+            rendered_reports.append(
+                (
+                    f"league_{summary.sport_code}_{summary.label}",
+                    render_league_report_markdown(
+                        analysis=analysis,
+                        sport_code=summary.sport_code,
+                        league_id=summary.league_id,
+                        generated_at=generated_at,
+                    ),
+                )
+            )
+
         saved_reports: list[tuple[str, Path]] = []
-        for (report_name, content), output_path in zip(
+        for (report_name, content), (output_name, output_path) in zip(
             rendered_reports,
-            output_paths,
+            report_output_paths,
             strict=True,
         ):
+            if report_name != output_name:
+                raise ValueError("보고서 내용과 저장 경로의 순서가 일치하지 않습니다.")
             saved_path = save_report_text(content=content, output_path=output_path)
             saved_reports.append((report_name, saved_path))
     except (OSError, ValueError, TemplateError) as error:

@@ -5,7 +5,7 @@
 
 현재 Upcoming 엔드포인트로 관찰할 경기를 탐색하고 Event View 엔드포인트를
 수집·비교합니다. 보고서 분석은
-`EventViewReportAnalysis`, endpoint 전체·종목별 Markdown 렌더러와 `report` CLI,
+`EventViewReportAnalysis`, endpoint 전체·종목별·리그별 Markdown 렌더러와 `report` CLI,
 이벤트별 필드 변화 타임라인을 만드는 `inspect-field` CLI가 구현되어 있습니다.
 HTML 렌더러는 아직 구현되지 않았습니다.
 
@@ -19,7 +19,7 @@ CLI
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
 ├── compare           ── 저장된 특정 이벤트의 최근 응답 2개 비교
-├── report            ── 저장된 전체 자료 분석 + endpoint·종목별 Markdown 보고서 저장
+├── report            ── 저장된 전체 자료 분석 + endpoint·종목·리그별 Markdown 보고서 저장
 └── inspect-field     ── 저장된 특정 필드의 이벤트별 값 변화 보고서 저장
 
 보고서 분석 라이브러리
@@ -225,6 +225,8 @@ cli.compare(event_id)
 ```text
 cli.report()
 ├── sport_config.load_sport_codes_by_id(config/betsapi_sports.yaml)
+├── upcoming.targets.load_upcoming_targets(config/betsapi_upcoming_targets.yaml)
+│   └── 리그 ID·label·보고서 표시 순서 준비
 ├── reporting.tracked_field_config.load_tracked_fields_config(...)
 │   ├── config/event_view_tracked_fields.yaml 로드
 │   ├── 등록된 종목 코드·경로·중복 검증
@@ -250,13 +252,23 @@ cli.report()
 │   │   └── json_structure.extract_json_structure(event_data)
 │   ├── reporting.analysis.summarize_tracked_field_values(...)
 │   │   └── Observation마다 reporting.field_path.resolve_json_field(...)
+│   ├── reporting.analysis.summarize_league_observations(...)
+│   │   └── league.id로 설정·미등록·unclassified 리그 분류
+│   ├── reporting.analysis.summarize_league_fields(...)
+│   │   └── 종목별 경로 합집합의 리그별 제공 현황 계산
+│   ├── reporting.analysis.summarize_league_tracked_field_values(...)
+│   │   └── 설정된 추적 필드 값을 리그 범위로 집계
 │   └── reporting.models.EventViewReportAnalysis(...)
 ├── reporting.markdown.render_endpoint_report_markdown(...)
 │   └── reporting/templates/markdown/event_view_endpoint.md.jinja 렌더링
 ├── 종목별 reporting.markdown.render_sport_report_markdown(...)
+│   ├── 리그별 필드 제공 비교와 표본 없는 설정 리그 표시
 │   └── reporting/templates/markdown/event_view_sport.md.jinja 렌더링
-├── reporting.storage.build_report_output_path(...) 전체 경로 사전 계산
-│   └── 보고서 이름을 안전한 파일명으로 변환
+├── 표본이 있는 리그별 reporting.markdown.render_league_report_markdown(...)
+│   └── reporting/templates/markdown/event_view_league.md.jinja 렌더링
+├── reporting.storage.build_report_output_path(...)과
+│   reporting.storage.build_league_report_output_path(...)로 전체 경로 사전 계산
+│   └── 보고서 이름과 종목·리그 디렉터리를 안전한 경로로 변환
 ├── 전체 출력 경로의 중복·기존 파일 검사
 └── reporting.storage.save_report_text(...)로 UTF-8 저장
 ```
@@ -305,13 +317,18 @@ cli.inspect_field(sport_code, field_path, event_id)
 - 각 경로가 항상·일부·전혀 제공되지 않은 고유 이벤트 수
 - 설정된 종목·단일 값 경로별 값의 Observation 수와 고유 이벤트 수
 - 설정된 경로의 필드 누락과 객체·배열 제외 현황
+- 설정·미등록·unclassified 리그별 Observation 수와 고유 이벤트 수
+- 종목에서 관측한 전체 경로의 리그별 제공 상태와 자료형
+- 설정된 추적 필드의 리그별 값과 객체·배열 제외 현황
 - 읽지 못한 CaptureMetadata 파일과 원인
 - 해석하지 못한 EventObservation 파일과 원인
 
 전체·성공·실패 개수는 위 집계와 실패 목록에서 계산하며 중복 저장하지 않습니다.
 endpoint Markdown 보고서는 처리 개요, 응답 분석 상태, 응답 이슈, 종목별 Observation
 현황과 두 종류의 실패 상세를 보여줍니다. 종목별 Markdown 보고서는 선택한 종목의
-Observation·고유 이벤트 수와 JSON 필드별 자료형 및 제공 현황을 보여줍니다.
+Observation·고유 이벤트 수, JSON 필드별 자료형·제공 현황과 리그별 제공 비교를
+보여줍니다. 표본이 있는 리그별 상세 보고서는 같은 분석을 해당 리그의 Observation으로
+제한하고, 리그 범위의 추적 필드 값 집계도 함께 보여줍니다.
 
 ## Capture와 저장 데이터의 관계
 
@@ -398,12 +415,12 @@ data/
 | `sport_classification.py` | `classify_event_sport` | 이벤트의 `sport_id` 분류 |
 | `reporting/models.py` | `ObservedEvent`, `EventViewReportAnalysis`, 각종 요약·실패 모델 | 보고서 분석 단계 사이에서 전달하는 데이터 구조 |
 | `reporting/sources.py` | `resolve_observed_event(s)`, `load_capture_metadata_files` | 저장 파일을 읽어 보고서 분석 입력으로 해석하고 부분 실패 기록 |
-| `reporting/analysis.py` | `summarize_*`, `analyze_event_view_report` | 보고서용 집계와 전체 분석 결과 조합 |
+| `reporting/analysis.py` | `summarize_*`, `analyze_event_view_report` | 종목·리그별 보고서용 집계와 전체 분석 결과 조합 |
 | `reporting/field_path.py` | `validate_field_path`, `resolve_json_field`, `flatten_json_object_scalars` | 보고서 분석에서 공유하는 JSON 객체 경로 처리 |
 | `reporting/field_inspection.py` | `analyze_field_inspection` | 중첩 객체 전개와 이벤트별 값 변화 계산 |
 | `reporting/tracked_field_config.py` | `load_tracked_fields_config` | 종목별 값 집계 경로 설정 로드·검증 |
-| `reporting/markdown.py` | `render_endpoint_report_markdown`, `render_sport_report_markdown`, `render_field_inspection_markdown` | endpoint·종목·필드 분석 결과의 Markdown 렌더링 |
-| `reporting/storage.py` | `build_report_output_path`, `build_field_report_output_path`, `save_report_text` | 날짜별 보고서 경로 계산과 텍스트 저장 |
+| `reporting/markdown.py` | `render_endpoint_report_markdown`, `render_sport_report_markdown`, `render_league_report_markdown`, `render_field_inspection_markdown` | endpoint·종목·리그·필드 분석 결과의 Markdown 렌더링 |
+| `reporting/storage.py` | `build_report_output_path`, `build_field_report_output_path`, `build_league_report_output_path`, `save_report_text` | 날짜별 보고서와 종목·리그 하위 경로 계산 및 텍스트 저장 |
 
 ## 문서 갱신 기준
 
