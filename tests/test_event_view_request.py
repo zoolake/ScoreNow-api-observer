@@ -29,19 +29,12 @@ def test_parse_requested_event_ids_rejects_empty_event_id(value: str) -> None:
         parse_requested_event_ids(value)
 
 
-def test_parse_requested_event_ids_accepts_maximum_unique_event_ids() -> None:
-    event_ids = [f"event-{index}" for index in range(MAX_EVENT_IDS_PER_REQUEST)]
+def test_parse_requested_event_ids_accepts_more_than_one_request_batch() -> None:
+    event_ids = [f"event-{index}" for index in range(MAX_EVENT_IDS_PER_REQUEST + 1)]
 
     result = parse_requested_event_ids(",".join([*event_ids, event_ids[0]]))
 
     assert result == sorted(event_ids)
-
-
-def test_parse_requested_event_ids_rejects_too_many_unique_event_ids() -> None:
-    event_ids = [f"event-{index}" for index in range(MAX_EVENT_IDS_PER_REQUEST + 1)]
-
-    with pytest.raises(InvalidRequestedEventIdsError):
-        parse_requested_event_ids(",".join(event_ids))
 
 
 def test_build_event_view_request_batches_preserves_order_and_maximum_size() -> None:

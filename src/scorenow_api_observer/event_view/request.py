@@ -19,11 +19,6 @@ def parse_requested_event_ids(value: str) -> list[str]:
 
         event_id_set.add(stripped_event_id)
 
-    if len(event_id_set) > MAX_EVENT_IDS_PER_REQUEST:
-        raise InvalidRequestedEventIdsError(
-            f"최대 요청 가능한 ID는 {MAX_EVENT_IDS_PER_REQUEST}개입니다."
-        )
-
     return sorted(event_id_set)
 
 

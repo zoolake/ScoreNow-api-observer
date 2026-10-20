@@ -421,9 +421,13 @@ def test_watch_upcoming_batches_candidates_and_waits_between_cycles(
     def capture_event_view(**kwargs):
         captured_batches.append(kwargs["requested_event_ids"])
         return SimpleNamespace(
-            response=httpx.Response(200),
+            response=httpx.Response(200, json={"results": []}),
             raw_file_path=Path("data/raw/capture.json"),
             metadata_file_path=Path("data/metadata/capture.json"),
+            metadata=SimpleNamespace(
+                response_analysis_status="completed",
+                captured_at=now,
+            ),
             observation_save_failures=[],
             event_observations=[],
         )
@@ -451,7 +455,7 @@ def test_watch_upcoming_batches_candidates_and_waits_between_cycles(
             "10",
             "--interval",
             "7",
-            "--count",
+            "--max-cycles",
             "2",
         ],
     )
@@ -495,7 +499,10 @@ def test_watch_upcoming_returns_without_api_settings_when_no_candidate(
     monkeypatch.setattr(cli, "_utc_now", lambda: now)
     monkeypatch.setattr(cli, "Settings", fail_to_load_settings)
 
-    result = CliRunner().invoke(cli.app, ["watch-upcoming", "--count", "1"])
+    result = CliRunner().invoke(
+        cli.app,
+        ["watch-upcoming", "--max-cycles", "1"],
+    )
 
     assert result.exit_code == 0
     assert "수집 후보 경기: 0개" in result.output
@@ -531,9 +538,13 @@ def test_watch_upcoming_continues_with_next_batch_after_storage_failure(
         if len(captured_batches) == 1:
             raise OSError("disk full")
         return SimpleNamespace(
-            response=httpx.Response(200),
+            response=httpx.Response(200, json={"results": []}),
             raw_file_path=Path("data/raw/capture.json"),
             metadata_file_path=Path("data/metadata/capture.json"),
+            metadata=SimpleNamespace(
+                response_analysis_status="completed",
+                captured_at=now,
+            ),
             observation_save_failures=[],
             event_observations=[],
         )
@@ -554,7 +565,7 @@ def test_watch_upcoming_continues_with_next_batch_after_storage_failure(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch-upcoming", "--count", "1"],
+        ["watch-upcoming", "--max-cycles", "1"],
     )
 
     assert result.exit_code == 0

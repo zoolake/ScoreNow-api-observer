@@ -110,12 +110,13 @@ uv run observer watch-upcoming \
   --sport-code baseball \
   --league-labels kbo,mlb \
   --interval 30 \
-  --count 3
+  --max-cycles 3
 ```
 
-`--count`는 개별 API 호출 횟수가 아니라 선택한 후보 전체를 수집하는 주기 횟수입니다.
-후보가 11개라면 한 주기에 Event View API를 2회 호출하며, `--count 3`이면 총 6회
-호출합니다. 이 명령은 Upcoming API를 다시 호출하지 않습니다.
+`--max-cycles`는 개별 API 호출 횟수가 아니라 선택한 후보 전체를 수집하는 최대 주기
+횟수입니다. 후보가 11개라면 최초 한 주기에 Event View API를 2회 호출합니다. 종료
+감지 후 15분 추가 수집을 마친 이벤트는 다음 주기부터 제외하므로 이후 배치 수와 실제
+호출 횟수는 줄어들 수 있습니다. 이 명령은 Upcoming API를 다시 호출하지 않습니다.
 
 ### 8. 첫 응답 수집
 
@@ -144,12 +145,13 @@ data/metadata/event-view/YYYY-MM-DD/...
 uv run observer watch \
   --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 \
   --interval 30 \
-  --count 3
+  --max-cycles 3
 ```
 
 매 호출의 원문과 메타데이터는 Capture 단위로 한 번 저장합니다. 응답에서 고유하게 식별할 수 있는 각 이벤트에는 EventObservation을 만들고, 이벤트별 직전 응답이 있으면 구조를 비교합니다. 변화가 발견된 경우에는 `data/changes/event-view` 아래에 이벤트별 변화 기록도 저장됩니다.
 
-호출 횟수를 제한하지 않고 직접 중단하려면 `--count`를 생략하고 `Ctrl+C`를 누릅니다.
+최대 주기를 제한하지 않으려면 `--max-cycles`를 생략합니다. 모든 이벤트가 종료 감지 후
+15분 추가 수집을 마치면 자동 종료하며, 그전에도 `Ctrl+C`로 중단할 수 있습니다.
 
 ```bash
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
@@ -248,7 +250,7 @@ uv run observer watch-upcoming \
   --sport-code baseball \
   --league-labels kbo,mlb \
   --interval 30 \
-  --count 10
+  --max-cycles 10
 ```
 
 - `--within-minutes`: 현재부터 수집 대상으로 포함할 분 단위 범위입니다. 기본값은
@@ -256,12 +258,13 @@ uv run observer watch-upcoming \
 - `--sport-code`, `--league-labels`: `upcoming-candidates`와 동일한 선택 필터입니다.
 - `--interval`, `-i`: 후보 전체를 한 번 수집한 뒤 다음 수집 주기까지 기다릴
   시간입니다. 기본값은 `30`초이며 최소값은 `1`초입니다.
-- `--count`, `-c`: 후보 전체를 반복 수집할 주기 횟수입니다. 생략하면 `Ctrl+C`로
-  중단할 때까지 계속 수집합니다.
+- `--max-cycles`, `-c`: 후보 전체를 반복 수집할 최대 주기 횟수입니다. 생략하면 모든
+  이벤트가 종료 후 추가 수집을 마치거나 `Ctrl+C`로 중단할 때까지 계속 수집합니다.
 - 후보는 명령 시작 시 한 번 확정합니다. 실행 중 새 Discovery가 저장되거나 예정
   경기가 추가되어도 현재 실행의 수집 대상은 바뀌지 않습니다.
-- 후보 순서를 유지하면서 최대 10개씩 Event View 요청 배치로 나눕니다. 예를 들어
-  후보 23개는 한 수집 주기마다 3번의 API 호출이 발생합니다.
+- 활성 후보 순서를 유지하면서 최대 10개씩 Event View 요청 배치로 나눕니다. 종료
+  감지 후 15분 추가 수집을 마친 이벤트를 제외하고 매 주기 배치를 다시 구성합니다.
+  예를 들어 활성 후보 23개에는 한 주기에 3번의 API 호출이 발생합니다.
 - 배치 사이에는 기다리지 않고, 한 수집 주기의 모든 배치 처리가 끝난 뒤에만
   `--interval`만큼 기다립니다.
 - 개별 배치의 연결·저장 실패는 출력하고 나머지 배치와 다음 수집 주기를 계속합니다.
@@ -270,11 +273,15 @@ uv run observer watch-upcoming \
 - 사용 가능한 Discovery는 있지만 후보가 없으면 API 설정을 읽거나 API를 호출하지
   않고 종료 코드 `0`으로 끝납니다. 사용할 수 있는 Discovery가 전혀 없으면 종료
   코드 `1`, 잘못된 필터나 API 설정은 종료 코드 `2`입니다.
-- 경기 종료를 해석해 이벤트별 수집을 자동 중단하는 기능은 포함하지 않습니다.
+- 이벤트별로 `time_status=3`을 최초 관측한 시각을 기록하고 이후 15분 동안 추가
+  수집합니다. 그사이 다른 숫자 상태가 관측되면 종료 감지를 취소하며, 이벤트 누락이나
+  해석할 수 없는 상태는 기존 종료 감지를 변경하지 않습니다.
+- 모든 이벤트의 추가 수집이 끝나면 `--max-cycles`보다 일찍 자동 종료합니다.
 
 ### `observer collect`
 
-Event View API를 한 번 호출하고 원문 응답과 호출 메타데이터를 저장합니다.
+지정한 이벤트를 Event View API로 한 수집 주기 호출하고 원문 응답과 호출 메타데이터를
+저장합니다.
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
@@ -283,7 +290,9 @@ uv run observer collect --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
 - `--event-ids`, `-e`: 쉼표로 구분한 이벤트 ID입니다.
 - 각 ID의 앞뒤 공백은 제거합니다.
 - 중복 ID는 제거하고 문자열 기준으로 정렬합니다.
-- 빈 ID가 포함되거나 고유 ID가 10개를 초과하면 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
+- 빈 ID가 포함되면 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
+- 고유 ID가 10개를 초과하면 최대 10개씩 나눠 각 배치를 한 번 호출합니다. 일부 배치가
+  실패해도 남은 배치를 계속 처리한 뒤 종료 코드 `1`로 끝납니다.
 
 ### `observer watch`
 
@@ -293,12 +302,19 @@ Event View API를 반복 호출하여 매 응답의 원문과 메타데이터를
 uv run observer watch \
   --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 \
   --interval 30 \
-  --count 10
+  --max-cycles 10
 ```
 
-- `--event-ids`, `-e`: `collect`와 동일한 형식의 이벤트 ID 목록입니다.
-- `--interval`, `-i`: 호출 간격(초). 기본값은 `30`이며 최소값은 `1`입니다.
-- `--count`, `-c`: 호출 횟수. 생략하면 `Ctrl+C`로 중단할 때까지 계속 수집합니다.
+- `--event-ids`, `-e`: `collect`와 동일한 형식의 이벤트 ID 목록입니다. 10개를
+  초과하면 활성 이벤트를 최대 10개씩 나눠 호출합니다.
+- `--interval`, `-i`: 전체 활성 이벤트를 한 번 수집한 뒤 다음 수집 주기까지 기다릴
+  시간입니다. 기본값은 `30`초이며 최소값은 `1`초입니다.
+- `--max-cycles`, `-c`: 최대 수집 주기 횟수입니다. 개별 API 호출 횟수가 아닙니다.
+  생략하면 모든 이벤트가 완료되거나 `Ctrl+C`로 중단할 때까지 계속 수집합니다.
+- 이벤트별로 `time_status=3`을 감지한 후 15분 동안 추가 수집합니다. 완료된 이벤트는
+  다음 주기부터 제외하고 남은 활성 이벤트로 요청 배치를 다시 구성합니다.
+- 추가 수집 중 다른 숫자 상태가 관측되면 종료 감지를 취소하고, 이후 다시 `3`을
+  관측한 시각부터 15분을 새로 계산합니다.
 - 각 이벤트의 첫 수집처럼 직전 EventObservation이 없으면 해당 이벤트의 구조 비교를 생략합니다.
 - 구조 변화가 없으면 변화 기록 파일을 만들지 않습니다.
 - 원문 또는 CaptureMetadata 저장에 실패하면 오류를 출력하고 다음 API 수집을 계속합니다.

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -87,8 +87,13 @@ def _capture_result(
             )
         ]
 
+    response_results = [
+        {"id": observation.event_id, "time_status": 1}
+        for observation in event_observations
+    ]
+
     return CaptureResult(
-        response=httpx.Response(200, json={"success": 1}),
+        response=httpx.Response(200, json={"success": 1, "results": response_results}),
         raw_file_path=Path(current_capture.raw_file_path),
         metadata_file_path=metadata_file_path,
         metadata=current_capture,
@@ -159,6 +164,75 @@ def test_collect_normalizes_multiple_event_ids(
 
     assert result.exit_code == 0
     assert captured_requested_event_ids == [["A", "B"]]
+
+
+def test_collect_batches_more_than_ten_event_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    captured_requested_event_ids: list[list[str]] = []
+
+    def capture_event_view(
+        *,
+        base_url: str,
+        token: str,
+        requested_event_ids: list[str],
+    ) -> CaptureResult:
+        captured_requested_event_ids.append(requested_event_ids)
+        return _capture_result(
+            current_capture,
+            event_observations=[],
+        )
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+    event_ids = [f"EVENT-{index:02}" for index in range(11)]
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["collect", "--event-ids", ",".join(event_ids)],
+    )
+
+    assert result.exit_code == 0
+    assert captured_requested_event_ids == [event_ids[:10], event_ids[10:]]
+    assert "Event View 요청 배치: 2개" in result.output
+
+
+def test_collect_continues_with_next_batch_after_storage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_capture = _capture(
+        captured_at=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        raw_file_path="data/raw/current.json",
+    )
+    event_ids = [f"EVENT-{index:02}" for index in range(11)]
+    captured_requested_event_ids: list[list[str]] = []
+
+    def capture_event_view(
+        *,
+        base_url: str,
+        token: str,
+        requested_event_ids: list[str],
+    ) -> CaptureResult:
+        captured_requested_event_ids.append(requested_event_ids)
+        if len(captured_requested_event_ids) == 1:
+            raise OSError("disk full")
+        return _capture_result(current_capture, event_observations=[])
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["collect", "--event-ids", ",".join(event_ids)],
+    )
+
+    assert result.exit_code == 1
+    assert captured_requested_event_ids == [event_ids[:10], event_ids[10:]]
+    assert "전체 2개 배치 중 1개 수집에 실패했습니다." in result.output
 
 
 def test_collect_rejects_invalid_event_ids_before_loading_settings(
@@ -284,7 +358,15 @@ def test_watch_continues_after_capture_storage_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
+        [
+            "watch",
+            "--event-ids",
+            "123",
+            "--interval",
+            "7",
+            "--max-cycles",
+            "2",
+        ],
     )
 
     assert result.exit_code == 0
@@ -292,6 +374,91 @@ def test_watch_continues_after_capture_storage_fails(
     assert sleep_calls == [7]
     assert "파일 저장에 실패했습니다." in result.output
     assert "호출: 2회 / 저장: 1개" in result.output
+
+
+def test_watch_removes_completed_event_and_rebuilds_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_cycle_at = datetime(2026, 10, 21, 1, 0, tzinfo=UTC)
+    current_time = first_cycle_at
+    event_ids = [f"EVENT-{index:02}" for index in range(11)]
+    captured_batches: list[list[str]] = []
+
+    def capture_event_view(
+        *,
+        base_url: str,
+        token: str,
+        requested_event_ids: list[str],
+    ) -> CaptureResult:
+        captured_batches.append(requested_event_ids)
+        response_results = [
+            {
+                "id": event_id,
+                "time_status": 3 if event_id == event_ids[0] else 1,
+            }
+            for event_id in requested_event_ids
+        ]
+        metadata_file_path = Path("data/metadata/current.json")
+        metadata = _capture(
+            captured_at=current_time,
+            raw_file_path="data/raw/current.json",
+        ).model_copy(
+            update={
+                "requested_event_ids": requested_event_ids,
+                "returned_event_ids": requested_event_ids,
+            }
+        )
+        observations = [
+            EventObservation(
+                event_id=event_id,
+                capture_metadata_file_path=str(metadata_file_path),
+                result_index=result_index,
+            )
+            for result_index, event_id in enumerate(requested_event_ids)
+        ]
+        return CaptureResult(
+            response=httpx.Response(200, json={"results": response_results}),
+            raw_file_path=Path(metadata.raw_file_path),
+            metadata_file_path=metadata_file_path,
+            metadata=metadata,
+            observation_save_failures=[],
+            event_observations=observations,
+        )
+
+    def advance_time(seconds: float) -> None:
+        nonlocal current_time
+        current_time += timedelta(seconds=seconds)
+
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+    monkeypatch.setattr(
+        cli,
+        "compare_with_previous_observation",
+        lambda _current_observation: None,
+    )
+    monkeypatch.setattr(cli, "_utc_now", lambda: current_time)
+    monkeypatch.setattr(cli.time, "sleep", advance_time)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "watch",
+            "--event-ids",
+            ",".join(event_ids),
+            "--interval",
+            "900",
+            "--max-cycles",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_batches == [event_ids[:10], event_ids[10:], event_ids[1:]]
+    assert "경기 ID EVENT-00: 종료를 감지했습니다." in result.output
+    assert (
+        "경기 ID EVENT-00: 종료 감지 후 15분 추가 수집을 완료했습니다." in result.output
+    )
+    assert "완료 이벤트: 1개" in result.output
 
 
 def test_watch_compares_observation_after_observation_save_fails(
@@ -325,7 +492,7 @@ def test_watch_compares_observation_after_observation_save_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--max-cycles", "1"],
     )
 
     assert result.exit_code == 0
@@ -372,7 +539,7 @@ def test_watch_compares_each_event_observation(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--max-cycles", "1"],
     )
 
     assert result.exit_code == 0
@@ -419,7 +586,7 @@ def test_watch_continues_with_next_observation_after_comparison_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--max-cycles", "1"],
     )
 
     assert result.exit_code == 0
@@ -458,7 +625,15 @@ def test_watch_waits_between_captures_when_structure_has_not_changed(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
+        [
+            "watch",
+            "--event-ids",
+            "123",
+            "--interval",
+            "7",
+            "--max-cycles",
+            "2",
+        ],
     )
 
     assert result.exit_code == 0
@@ -496,7 +671,7 @@ def test_watch_saves_structure_change_record(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--count", "1"],
+        ["watch", "--event-ids", "123", "--max-cycles", "1"],
     )
 
     assert result.exit_code == 0
@@ -541,7 +716,15 @@ def test_watch_continues_after_structure_change_record_save_fails(
 
     result = CliRunner().invoke(
         cli.app,
-        ["watch", "--event-ids", "123", "--interval", "7", "--count", "2"],
+        [
+            "watch",
+            "--event-ids",
+            "123",
+            "--interval",
+            "7",
+            "--max-cycles",
+            "2",
+        ],
     )
 
     assert result.exit_code == 0

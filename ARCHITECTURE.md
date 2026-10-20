@@ -28,7 +28,7 @@ CLI
 
 `collect`, `watch`, `watch-upcoming`은 하나의 공통 수집 함수인
 `capture_event_view()`를 사용합니다. 두 watch 명령은 `_run_event_view_watch()`로 반복
-제어와 부분 실패 처리를 공유합니다. `compare`와 watch의 구조 비교는
+제어, 동적 요청 배치, 이벤트별 종료 상태와 부분 실패 처리를 공유합니다. `compare`와 watch의 구조 비교는
 `compare_observations()`로 합쳐집니다. `report`는 저장된 자료만 사용하는 오프라인
 명령이며 API 설정을 읽지 않습니다. 기능별 코드는 `event_view`, `upcoming`,
 `reporting` 하위 패키지로 분리되어 있습니다.
@@ -100,7 +100,7 @@ cli.upcoming_candidates(within_minutes, sport_code, league_labels)
 ## `watch-upcoming` 호출 트리
 
 ```text
-cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, count)
+cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, max_cycles)
 ├── upcoming.candidates.normalize_candidate_sport_code(...)
 ├── upcoming.candidates.parse_candidate_league_labels(...)
 ├── upcoming.storage.find_league_upcoming_discovery_paths(...)
@@ -109,15 +109,19 @@ cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, count)
 ├── upcoming.candidates.select_upcoming_candidates(...)
 │   ├── 명령 시작 시각을 기준으로 후보 한 번 확정
 │   └── 예정 시각·이벤트 ID 순으로 정렬된 고유 이벤트 반환
-├── event_view.request.build_event_view_request_batches(...)
-│   └── 후보 순서를 유지하며 최대 10개씩 요청 배치 생성
 ├── 후보가 있을 때만 settings.Settings()
-└── cli._run_event_view_watch(request_batches, interval, count)
-    ├── 후보 전체 배치를 한 수집 주기로 반복
+└── cli._run_event_view_watch(event_ids, interval, max_cycles)
+    ├── event_view.watching.EventWatchState를 이벤트별로 생성
+    ├── 종료 후 15분 추가 수집을 마친 이벤트 제외
+    ├── 남은 이벤트를 최대 10개씩 매 주기 다시 배치
     ├── 각 배치마다 cli._capture_event_view_watch_batch(...)
     │   ├── event_view.collector.capture_event_view(...)
     │   ├── Capture·Observation 저장 결과 출력
     │   └── Observation마다 cli._compare_and_save_structure_change(...)
+    ├── cli._update_event_watch_states(...)
+    │   ├── 원문에서 이벤트별 time_status 추출
+    │   ├── 3을 최초 관측하면 종료 감지 시각 기록
+    │   └── 다른 숫자 상태가 관측되면 종료 감지 취소
     └── 전체 배치가 끝난 뒤 다음 주기 전까지 interval만큼 대기
 ```
 
@@ -125,6 +129,8 @@ cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, count)
 후보 목록은 시작할 때 한 번 확정하므로 실행 중 Discovery 변경은 반영하지 않습니다.
 사용 가능한 Discovery가 있지만 후보가 없으면 API 설정도 읽지 않고 정상 종료합니다.
 개별 Event View 배치가 실패해도 같은 주기의 다음 배치와 이후 수집 주기를 계속합니다.
+이벤트 누락이나 해석 불가능한 time_status는 기존 종료 상태를 변경하지 않습니다. 모든
+이벤트가 종료 후 15분 추가 수집을 마치면 `max_cycles`보다 일찍 종료합니다.
 저장 결과는 일반 `watch`와 같은 Event View 원문·CaptureMetadata·EventObservation·
 StructureChangeRecord이므로 별도의 `watch-upcoming` 저장 형식은 없습니다.
 
@@ -135,47 +141,47 @@ cli.collect(event_ids)
 ├── cli._parse_requested_event_ids_or_exit(event_ids)
 │   └── event_view.request.parse_requested_event_ids(event_ids)
 │       ├── 쉼표 분리 및 공백 제거
-│       ├── 중복 제거 및 정렬
-│       └── 최대 10개 검증
+│       └── 중복 제거 및 정렬
 ├── settings.Settings()
-├── event_view.collector.capture_event_view(requested_event_ids=...)
-│   ├── bets_api_client.get_event_view(...)
-│   │   └── GET /v1/event/view?event_id=A,B,...
-│   ├── event_view.storage.save_raw_response(response.content, captured_at)
-│   ├── response.json()
-│   ├── event_view.response.analyze_event_view_response(...)
-│   │   ├── returned_event_ids 계산
-│   │   ├── response_issues 계산
-│   │   └── observable_events 계산
-│   ├── event_view.models.CaptureMetadata(...)
-│   ├── event_view.storage.save_capture_metadata(metadata)
-│   └── observable_event마다
-│       ├── event_view.models.EventObservation(...)
-│       └── event_view.storage.save_event_observation(observation)
-├── cli._print_capture_summary(result)
-├── cli._print_observation_save_failures(result)
-└── HTTP 응답 JSON 출력
+├── event_view.request.build_event_view_request_batches(...)
+│   └── 전체 ID를 최대 10개씩 한 수집 주기의 요청 배치로 구성
+└── 각 배치마다 event_view.collector.capture_event_view(requested_event_ids=...)
+    ├── bets_api_client.get_event_view(...)
+    │   └── GET /v1/event/view?event_id=A,B,...
+    ├── event_view.storage.save_raw_response(response.content, captured_at)
+    ├── response.json()
+    ├── event_view.response.analyze_event_view_response(...)
+    │   ├── returned_event_ids 계산
+    │   ├── response_issues 계산
+    │   └── observable_events 계산
+    ├── event_view.models.CaptureMetadata(...)
+    ├── event_view.storage.save_capture_metadata(metadata)
+    └── observable_event마다
+        ├── event_view.models.EventObservation(...)
+        └── event_view.storage.save_event_observation(observation)
 ```
 
-원문 또는 CaptureMetadata 저장이 실패하면 `capture_event_view()` 자체가 실패합니다.
+원문 또는 CaptureMetadata 저장이 실패하면 해당 배치는 실패하지만 이후 배치는 계속
+처리합니다. 하나 이상의 배치가 실패하면 모든 배치를 처리한 뒤 종료 코드 `1`을
+반환합니다.
 개별 EventObservation 저장 실패는 `CaptureResult.observation_save_failures`에 모으고,
 성공한 Capture는 유지합니다.
 
 ## `watch` 호출 트리
 
 ```text
-cli.watch(event_ids, interval_seconds, count)
+cli.watch(event_ids, interval_seconds, max_cycles)
 ├── cli._parse_requested_event_ids_or_exit(event_ids)
 ├── settings.Settings()
-└── cli._run_event_view_watch(request_batches=[requested_event_ids], ...)
-    └── 배치가 하나인 공통 watch 실행기
-        ├── cli._capture_event_view_watch_batch(...)
-        │   ├── event_view.collector.capture_event_view(...)
-        │   │   └── collect와 동일한 공통 수집 흐름
-        │   ├── cli._print_capture_summary(result)
-        │   └── cli._print_observation_save_failures(result)
-        └── 생성된 EventObservation마다
-            └── cli._compare_and_save_structure_change(current_observation)
+└── cli._run_event_view_watch(event_ids, interval_seconds, max_cycles)
+    ├── watch-upcoming과 같은 이벤트별 상태·동적 배치 처리
+    ├── cli._capture_event_view_watch_batch(...)
+    │   ├── event_view.collector.capture_event_view(...)
+    │   │   └── collect와 동일한 공통 수집 흐름
+    │   ├── cli._print_capture_summary(result)
+    │   └── cli._print_observation_save_failures(result)
+    ├── 생성된 EventObservation마다
+    │   └── cli._compare_and_save_structure_change(current_observation)
             ├── event_view.comparison.compare_with_previous_observation(...)
             │   ├── event_view.storage.load_capture_metadata(current metadata)
             │   ├── event_view.comparison.find_previous_observation(...)
@@ -191,6 +197,8 @@ cli.watch(event_ids, interval_seconds, count)
             ├── event_view.comparison.convert_to_structure_change_record(...)
             ├── cli._print_structure_comparison(...)
             └── event_view.storage.save_structure_change_record(record)
+    └── cli._update_event_watch_states(...)
+        └── time_status에 따라 종료 감지 시각 기록 또는 취소
 ```
 
 `watch`는 API 연결, Capture 저장, Observation 저장, 비교 또는 변화 기록 중 일부가
@@ -397,6 +405,7 @@ data/
 |---|---|---|
 | `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect`, `watch`, `compare`, `report`, `inspect_field` | 명령 조합과 사용자 출력 |
 | `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
+| `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events` | BETS API HTTP 호출 |
 | `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets` | Upcoming 설정 로드·검증과 리그 선택 |
 | `upcoming/candidates.py` | `resolve_latest_league_discoveries`, `select_upcoming_candidates` | 최신 사용 가능 Discovery 선택과 시간 범위 후보 계산 |

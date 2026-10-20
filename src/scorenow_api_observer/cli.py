@@ -23,6 +23,7 @@ from scorenow_api_observer.event_view.comparison import (
 from scorenow_api_observer.event_view.models import EventObservation
 from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
+    extract_observed_event,
 )
 from scorenow_api_observer.event_view.request import (
     InvalidRequestedEventIdsError,
@@ -33,6 +34,12 @@ from scorenow_api_observer.event_view.storage import (
     find_capture_metadata_paths,
     find_event_observation_paths,
     save_structure_change_record,
+)
+from scorenow_api_observer.event_view.watching import (
+    POST_FINISH_COLLECTION_PERIOD,
+    EventWatchState,
+    apply_event_time_status,
+    find_completed_event_ids,
 )
 from scorenow_api_observer.reporting.analysis import analyze_event_view_report
 from scorenow_api_observer.reporting.field_inspection import analyze_field_inspection
@@ -108,58 +115,72 @@ def collect(
         help="쉼표로 구분한 수집 대상 외부 API 경기 ID",
     ),
 ) -> None:
-    """BETS View API를 호출하고 응답을 저장합니다."""
+    """BETS View API를 한 수집 주기 호출하고 응답을 저장합니다."""
 
     requested_event_ids = _parse_requested_event_ids_or_exit(event_ids)
+    request_batches = build_event_view_request_batches(requested_event_ids)
 
     # BaseSettings가 실행 시 .env 에서 필수 값을 읽어온다.
     settings = Settings()  # pyright: ignore[reportCallIssue]
 
     typer.echo(f"수집 대상 경기 ID: {event_ids}")
-    typer.echo("BETS View API를 호출합니다.")
+    typer.echo(f"Event View 요청 배치: {len(request_batches)}개")
+    typer.echo("BETS View API를 한 수집 주기 호출합니다.")
 
-    try:
-        result = capture_event_view(
-            base_url=settings.bets_api_base_url,
-            token=settings.bets_api_token.get_secret_value(),
-            requested_event_ids=requested_event_ids,
+    failed_batch_count = 0
+
+    for batch_index, batch_event_ids in enumerate(request_batches, start=1):
+        typer.echo("")
+        typer.echo(f"[배치 {batch_index}/{len(request_batches)}]")
+        typer.echo(f"요청 이벤트 ID: {', '.join(batch_event_ids)}")
+
+        try:
+            result = capture_event_view(
+                base_url=settings.bets_api_base_url,
+                token=settings.bets_api_token.get_secret_value(),
+                requested_event_ids=batch_event_ids,
+            )
+        except httpx.RequestError:
+            typer.echo("API 서버에 연결하지 못했습니다.", err=True)
+            failed_batch_count += 1
+            continue
+        except OSError:
+            typer.echo("파일 저장에 실패했습니다.", err=True)
+            failed_batch_count += 1
+            continue
+
+        _print_capture_summary(result)
+        _print_observation_save_failures(result)
+
+        # HTTP status code : 4xx, 5xx
+        if result.response.is_error:
+            typer.echo("API가 오류 응답을 반환했습니다.", err=True)
+            typer.echo(result.response.text)
+            failed_batch_count += 1
+            continue
+
+        try:
+            response_data = result.response.json()
+        except ValueError:
+            typer.echo("응답이 JSON 형식이 아닙니다.", err=True)
+            typer.echo(result.response.text)
+            failed_batch_count += 1
+            continue
+
+        formatted_json = json.dumps(
+            response_data,
+            ensure_ascii=False,
+            indent=2,
         )
-    except httpx.RequestError:
+        typer.echo(formatted_json)
+
+    if failed_batch_count:
         typer.echo(
-            "API 서버에 연결하지 못했습니다.",
+            f"전체 {len(request_batches)}개 배치 중 "
+            f"{failed_batch_count}개 수집에 실패했습니다.",
             err=True,
         )
-        raise typer.Exit(code=1) from None
-    except OSError:
-        typer.echo(
-            "파일 저장에 실패했습니다.",
-            err=True,
-        )
-        raise typer.Exit(code=1) from None
-
-    _print_capture_summary(result)
-    _print_observation_save_failures(result)
-
-    # HTTP status code : 4xx, 5xx
-    if result.response.is_error:
-        typer.echo("API가 오류 응답을 반환했습니다.", err=True)
-        typer.echo(result.response.text)
         raise typer.Exit(code=1)
-
-    try:
-        response_data = result.response.json()
-    except ValueError:
-        typer.echo("응답이 JSON 형식이 아닙니다.", err=True)
-        typer.echo(result.response.text)
-        raise typer.Exit(code=1) from None
-
-    formatted_json = json.dumps(
-        response_data,
-        ensure_ascii=False,
-        indent=2,
-    )
-
-    typer.echo(formatted_json)
 
 
 @app.command()
@@ -171,10 +192,14 @@ def watch(
         help="쉼표로 구분한 수집 대상 외부 API 경기 ID",
     ),
     interval_seconds: int = typer.Option(
-        30, "--interval", "-i", min=1, help="호출 간격(초)"
+        30, "--interval", "-i", min=1, help="수집 주기 간 간격(초)"
     ),
-    count: int | None = typer.Option(
-        None, "--count", "-c", min=1, help="호출할 횟수. 생략하면 계속 수집"
+    max_cycles: int | None = typer.Option(
+        None,
+        "--max-cycles",
+        "-c",
+        min=1,
+        help="최대 수집 주기 횟수. 생략하면 모든 이벤트가 완료될 때까지 수집",
     ),
 ) -> None:
     """Event View API를 반복 수집하고 응답 구조 변화를 비교·기록합니다."""
@@ -183,18 +208,19 @@ def watch(
 
     settings = Settings()  # pyright: ignore[reportCallIssue]
 
-    count_description = str(count) if count is not None else "제한 없음"
+    max_cycles_description = str(max_cycles) if max_cycles is not None else "제한 없음"
 
     typer.echo(f"수집 대상 경기 ID: {event_ids}")
     typer.echo(f"호출 간격: {interval_seconds}초")
-    typer.echo(f"호출 횟수: {count_description}")
+    typer.echo(f"최대 수집 주기: {max_cycles_description}")
+    typer.echo("종료 감지 후 추가 수집: 15분")
     typer.echo("중단하려면 Ctrl+C를 누르세요.")
 
     _run_event_view_watch(
         settings=settings,
-        request_batches=[requested_event_ids],
+        event_ids=requested_event_ids,
         interval_seconds=interval_seconds,
-        count=count,
+        max_cycles=max_cycles,
     )
 
 
@@ -377,12 +403,12 @@ def watch_upcoming(
         min=1,
         help="전체 후보 수집 주기 간 간격(초)",
     ),
-    count: int | None = typer.Option(
+    max_cycles: int | None = typer.Option(
         None,
-        "--count",
+        "--max-cycles",
         "-c",
         min=1,
-        help="전체 후보를 수집할 주기 횟수. 생략하면 계속 수집",
+        help="최대 수집 주기 횟수. 생략하면 모든 이벤트가 완료될 때까지 수집",
     ),
 ) -> None:
     """곧 시작하는 저장된 Upcoming 후보를 Event View로 반복 수집합니다."""
@@ -454,16 +480,17 @@ def watch_upcoming(
         typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
-    count_description = str(count) if count is not None else "제한 없음"
+    max_cycles_description = str(max_cycles) if max_cycles is not None else "제한 없음"
     typer.echo(f"수집 주기 간격: {interval_seconds}초")
-    typer.echo(f"수집 주기 횟수: {count_description}")
+    typer.echo(f"최대 수집 주기: {max_cycles_description}")
+    typer.echo("종료 감지 후 추가 수집: 15분")
     typer.echo("중단하려면 Ctrl+C를 누르세요.")
 
     _run_event_view_watch(
         settings=settings,
-        request_batches=request_batches,
+        event_ids=event_ids,
         interval_seconds=interval_seconds,
-        count=count,
+        max_cycles=max_cycles,
     )
 
 
@@ -760,19 +787,41 @@ def inspect_field(
 def _run_event_view_watch(
     *,
     settings: Settings,
-    request_batches: list[list[str]],
+    event_ids: list[str],
     interval_seconds: int,
-    count: int | None,
+    max_cycles: int | None,
 ) -> None:
-    """Event View 요청 배치 전체를 하나의 주기로 보고 반복 수집합니다."""
+    """이벤트별 종료 상태를 관리하며 Event View를 동적 배치로 반복 수집합니다."""
 
     cycle_count = 0
     attempt_count = 0
     saved_count = 0
+    watched_events = {
+        event_id: EventWatchState(event_id=event_id) for event_id in event_ids
+    }
+    completed_event_count = 0
 
     try:
-        while count is None or cycle_count < count:
+        while max_cycles is None or cycle_count < max_cycles:
+            completed_event_ids = find_completed_event_ids(
+                states=list(watched_events.values()),
+                now=_utc_now(),
+            )
+            for event_id in completed_event_ids:
+                del watched_events[event_id]
+                completed_event_count += 1
+                typer.echo(
+                    f"경기 ID {event_id}: 종료 감지 후 15분 추가 수집을 완료했습니다."
+                )
+
+            if not watched_events:
+                typer.echo("모든 이벤트의 종료 후 추가 수집이 완료되었습니다.")
+                break
+
             cycle_count += 1
+            request_batches = build_event_view_request_batches(
+                list(watched_events.keys())
+            )
 
             for batch_index, requested_event_ids in enumerate(
                 request_batches,
@@ -781,21 +830,28 @@ def _run_event_view_watch(
                 attempt_count += 1
                 typer.echo("")
                 if len(request_batches) == 1:
-                    typer.echo(f"[📡 {cycle_count}번째 호출]")
+                    typer.echo(f"[📡 {cycle_count}번째 수집 주기]")
                 else:
                     typer.echo(
                         f"[📡 {cycle_count}번째 수집 주기 / "
                         f"배치 {batch_index}/{len(request_batches)}]"
                     )
-                    typer.echo(f"요청 이벤트 ID: {', '.join(requested_event_ids)}")
+                typer.echo(f"요청 이벤트 ID: {', '.join(requested_event_ids)}")
 
-                if _capture_event_view_watch_batch(
+                result = _capture_event_view_watch_batch(
                     settings=settings,
                     requested_event_ids=requested_event_ids,
-                ):
-                    saved_count += 1
+                )
+                if result is None:
+                    continue
 
-            if count is not None and cycle_count >= count:
+                saved_count += 1
+                _update_event_watch_states(
+                    watched_events=watched_events,
+                    result=result,
+                )
+
+            if max_cycles is not None and cycle_count >= max_cycles:
                 break
 
             time.sleep(interval_seconds)
@@ -804,7 +860,8 @@ def _run_event_view_watch(
         typer.echo(
             "❌ 반복 수집을 중단했습니다. "
             f"수집 주기: {cycle_count}회 / "
-            f"API 호출: {attempt_count}회 / 저장: {saved_count}개"
+            f"API 호출: {attempt_count}회 / 저장: {saved_count}개 / "
+            f"완료 이벤트: {completed_event_count}개"
         )
         return
 
@@ -812,7 +869,8 @@ def _run_event_view_watch(
     typer.echo(
         "✅ 반복 수집을 완료했습니다. "
         f"수집 주기: {cycle_count}회 / "
-        f"API 호출: {attempt_count}회 / 저장: {saved_count}개"
+        f"API 호출: {attempt_count}회 / 저장: {saved_count}개 / "
+        f"완료 이벤트: {completed_event_count}개"
     )
 
 
@@ -820,8 +878,8 @@ def _capture_event_view_watch_batch(
     *,
     settings: Settings,
     requested_event_ids: list[str],
-) -> bool:
-    """Event View 배치 하나를 수집·비교하고 Capture 저장 성공 여부를 반환합니다."""
+) -> CaptureResult | None:
+    """Event View 배치 하나를 수집·비교하고 성공한 Capture를 반환합니다."""
 
     try:
         result = capture_event_view(
@@ -831,22 +889,83 @@ def _capture_event_view_watch_batch(
         )
     except httpx.RequestError:
         typer.echo("API 서버에 연결하지 못했습니다.", err=True)
-        return False
+        return None
     except OSError:
         typer.echo("파일 저장에 실패했습니다.", err=True)
-        return False
+        return None
 
     _print_capture_summary(result)
     _print_observation_save_failures(result)
 
     if result.response.is_error:
         typer.echo("API가 오류 응답을 반환했습니다.", err=True)
-        return True
+        return result
 
     for observation in result.event_observations:
         _compare_and_save_structure_change(observation)
 
-    return True
+    return result
+
+
+def _update_event_watch_states(
+    *,
+    watched_events: dict[str, EventWatchState],
+    result: CaptureResult,
+) -> None:
+    """성공한 Capture에서 요청 대상 이벤트의 time_status를 상태에 반영합니다."""
+
+    if result.response.is_error:
+        return
+
+    if result.metadata.response_analysis_status != "completed":
+        return
+
+    try:
+        response_json = result.response.json()
+    except ValueError:
+        return
+
+    for observation in result.event_observations:
+        state = watched_events.get(observation.event_id)
+        if state is None:
+            continue
+
+        try:
+            event_data = extract_observed_event(
+                observation=observation,
+                response_json=response_json,
+            )
+        except InvalidEventObservationReferenceError as error:
+            typer.echo(
+                f"경기 ID {observation.event_id}의 종료 상태를 확인하지 못했습니다. "
+                f"{error}",
+                err=True,
+            )
+            continue
+
+        transition = apply_event_time_status(
+            state=state,
+            time_status=event_data.get("time_status"),
+            observed_at=result.metadata.captured_at,
+        )
+        if transition is None:
+            continue
+
+        if transition.kind == "finish_detected":
+            assert state.finished_detected_at is not None
+            collection_deadline = (
+                state.finished_detected_at + POST_FINISH_COLLECTION_PERIOD
+            )
+            typer.echo(
+                f"경기 ID {state.event_id}: 종료를 감지했습니다. "
+                f"{collection_deadline.isoformat()}까지 추가 수집합니다."
+            )
+            continue
+
+        typer.echo(
+            f"경기 ID {state.event_id}: time_status={transition.time_status}을 "
+            "관측하여 종료 감지를 취소했습니다."
+        )
 
 
 def _print_structure_comparison(result: StructureComparison) -> None:
