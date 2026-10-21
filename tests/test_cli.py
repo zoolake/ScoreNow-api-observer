@@ -1074,8 +1074,15 @@ def test_inspect_field_creates_report_from_stored_observations_offline(
     monkeypatch.setattr(cli, "load_sport_codes_by_id", lambda: {"16": "baseball"})
     monkeypatch.setattr(
         cli,
+        "find_event_observation_paths_for_event",
+        lambda event_id: observation_paths if event_id == "123" else [],
+    )
+    monkeypatch.setattr(
+        cli,
         "find_event_observation_paths",
-        lambda: observation_paths,
+        lambda: pytest.fail(
+            "이벤트 ID가 있으면 전체 Observation을 탐색하면 안 됩니다."
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -1192,8 +1199,13 @@ def test_inspect_timeline_creates_report_from_stored_observations_offline(
     )
     monkeypatch.setattr(
         cli,
+        "find_event_observation_paths_for_event",
+        lambda event_id: observation_paths if event_id == "123" else [],
+    )
+    monkeypatch.setattr(
+        cli,
         "find_event_observation_paths",
-        lambda: observation_paths,
+        lambda: pytest.fail("타임라인은 전체 Observation을 탐색하면 안 됩니다."),
     )
     monkeypatch.setattr(
         cli,
@@ -1241,7 +1253,11 @@ def test_inspect_timeline_rejects_empty_event_id_before_loading_observations(
         observations_searched = True
         return []
 
-    monkeypatch.setattr(cli, "find_event_observation_paths", find_observations)
+    monkeypatch.setattr(
+        cli,
+        "find_event_observation_paths_for_event",
+        lambda _event_id: find_observations(),
+    )
 
     result = CliRunner().invoke(
         cli.app,

@@ -33,6 +33,7 @@ from scorenow_api_observer.event_view.request import (
 from scorenow_api_observer.event_view.storage import (
     find_capture_metadata_paths,
     find_event_observation_paths,
+    find_event_observation_paths_for_event,
     save_structure_change_record,
 )
 from scorenow_api_observer.event_view.watching import (
@@ -737,8 +738,13 @@ def inspect_field(
         raise typer.Exit(code=2) from None
 
     try:
+        observation_file_paths = (
+            find_event_observation_paths()
+            if normalized_event_id is None
+            else find_event_observation_paths_for_event(normalized_event_id)
+        )
         resolution = resolve_observed_events(
-            observation_file_paths=find_event_observation_paths(),
+            observation_file_paths=observation_file_paths,
             sport_code_by_id=sport_code_by_id,
         )
         analysis = analyze_field_inspection(
@@ -813,7 +819,9 @@ def inspect_timeline(
 
     try:
         resolution = resolve_observed_events(
-            observation_file_paths=find_event_observation_paths(),
+            observation_file_paths=find_event_observation_paths_for_event(
+                normalized_event_id
+            ),
             sport_code_by_id=sport_code_by_id,
         )
         analysis = analyze_event_timeline(

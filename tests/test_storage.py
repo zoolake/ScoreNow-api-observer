@@ -15,6 +15,7 @@ from scorenow_api_observer.event_view.response import EventViewResponseIssue
 from scorenow_api_observer.event_view.storage import (
     find_capture_metadata_paths,
     find_event_observation_paths,
+    find_event_observation_paths_for_event,
     load_capture_metadata,
     load_event_observation,
     save_capture_metadata,
@@ -76,6 +77,46 @@ def test_find_event_observation_paths_returns_empty_list_for_missing_directory(
     tmp_path: Path,
 ) -> None:
     result = find_event_observation_paths(tmp_path / "does-not-exist")
+
+    assert result == []
+
+
+def test_find_event_observation_paths_for_event_returns_only_target_event(
+    tmp_path: Path,
+) -> None:
+    observation_directory = tmp_path / "observations"
+    first_path = observation_directory / "match_A" / "20260921_capture.json"
+    second_path = observation_directory / "match_A" / "20260922_capture.json"
+    other_event_path = observation_directory / "match_B" / "20260920_capture.json"
+    nested_path = observation_directory / "match_A" / "nested" / "ignored.json"
+
+    for observation_path in [
+        other_event_path,
+        second_path,
+        nested_path,
+        first_path,
+    ]:
+        observation_path.parent.mkdir(parents=True, exist_ok=True)
+        observation_path.write_text("{}", encoding="utf-8")
+
+    ignored_path = observation_directory / "match_A" / "notes.txt"
+    ignored_path.write_text("not an observation", encoding="utf-8")
+
+    result = find_event_observation_paths_for_event(
+        "match/A",
+        observation_directory,
+    )
+
+    assert result == [first_path, second_path]
+
+
+def test_find_event_observation_paths_for_event_returns_empty_list_for_missing_event(
+    tmp_path: Path,
+) -> None:
+    result = find_event_observation_paths_for_event(
+        "missing",
+        tmp_path / "observations",
+    )
 
     assert result == []
 

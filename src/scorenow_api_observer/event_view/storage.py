@@ -163,6 +163,18 @@ def find_event_observation_paths(
     return sorted(observation_paths)
 
 
+def find_event_observation_paths_for_event(
+    event_id: str,
+    base_directory: Path = OBSERVATION_DIRECTORY,
+) -> list[Path]:
+    """이벤트 ID 디렉터리에 바로 저장된 Observation 경로를 정렬합니다."""
+
+    safe_event_id = _to_safe_file_name(event_id)
+    event_directory = base_directory / safe_event_id
+    observation_paths = event_directory.glob("*.json")
+    return sorted(observation_paths)
+
+
 def find_capture_metadata_paths(
     base_directory: Path = METADATA_DIRECTORY,
 ) -> list[Path]:
