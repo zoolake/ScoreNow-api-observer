@@ -17,6 +17,7 @@ CLI
 ├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
 ├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
 ├── watch-upcoming ── 곧 시작할 경기를 자동 선택해 Event View 반복 수집
+├── collect-upcoming-odds ── 곧 시작할 경기를 자동 선택해 Event Odds 한 번 수집
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── collect-odds      ── 이벤트별 Event Odds API 호출 및 일간 최신 Snapshot 저장
 ├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
@@ -32,11 +33,12 @@ CLI
 `collect`, `watch`, `watch-upcoming`은 하나의 공통 수집 함수인
 `capture_event_view()`를 사용합니다. 두 watch 명령은 `_run_event_view_watch()`로 반복
 제어, 동적 요청 배치, 이벤트별 종료 상태와 부분 실패 처리를 공유합니다.
-`collect-odds`는 Event Odds가 한 요청에 이벤트 하나만 받는 제약에 맞춰 이벤트별
-호출을 계속하고 현재 실행 결과를 메모리에서 집계합니다. `compare`와 watch의 구조 비교는
-`compare_observations()`로 합쳐집니다. `report`는 저장된 자료만 사용하는 오프라인
-명령이며 API 설정을 읽지 않습니다. 기능별 코드는 `event_view`, `upcoming`,
-`event_odds`, `reporting` 하위 패키지로 분리되어 있습니다.
+`collect-odds`와 `collect-upcoming-odds`는 Event Odds가 한 요청에 이벤트 하나만 받는
+제약에 맞춰 `collect_event_odds()`를 공유하고, 이벤트별 호출 결과를 메모리에서
+집계합니다. `compare`와 watch의 구조 비교는 `compare_observations()`로 합쳐집니다.
+`report`는 저장된 자료만 사용하는 오프라인 명령이며 API 설정을 읽지 않습니다.
+기능별 코드는 `event_view`, `upcoming`, `event_odds`, `reporting` 하위 패키지로
+분리되어 있습니다.
 
 ## `discover-upcoming` 호출 트리
 
@@ -101,6 +103,30 @@ cli.upcoming_candidates(within_minutes, sport_code, league_labels)
 이 명령은 저장 자료만 읽으며 API 설정이나 토큰을 사용하지 않습니다. 일부 Discovery
 파일을 읽지 못하거나 특정 리그에 사용 가능한 결과가 없어도 다른 리그의 후보 계산은
 계속합니다. 사용할 수 있는 Discovery 자체가 하나도 없는 경우에만 종료 코드 `1`입니다.
+
+## `collect-upcoming-odds` 호출 트리
+
+```text
+cli.collect_upcoming_odds(within_minutes, sport_code, league_labels)
+├── upcoming.candidates.normalize_candidate_sport_code(...)
+├── upcoming.candidates.parse_candidate_league_labels(...)
+├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.resolve_latest_league_discoveries(...)
+│   └── upcoming-candidates와 같은 최신 결과·fallback 규칙 사용
+├── upcoming.candidates.select_upcoming_candidates(...)
+│   ├── now <= scheduled_at_utc <= now + N분 범위 적용
+│   ├── time_status는 후보 조건에 사용하지 않음
+│   └── 이벤트 ID 중복 제거 후 예정 시각·ID 순으로 정렬
+├── 후보가 있을 때만 settings.Settings()
+└── cli._collect_odds_for_event_ids(event_ids)
+    └── event_odds.collector.collect_event_odds(...)
+        └── collect-odds와 같은 이벤트별 호출·검증·Snapshot 교체 수행
+```
+
+이 명령은 Upcoming API를 호출하지 않으며 명령 시작 시 저장된 Discovery만 사용합니다.
+기존 Odds Snapshot의 존재 여부와 관계없이 선택된 이벤트를 다시 호출합니다. 후보가
+없으면 API 설정도 읽지 않고 정상 종료하고, 이벤트별 부분 실패와 종료 코드 정책은
+`collect-odds`와 같습니다.
 
 ## `watch-upcoming` 호출 트리
 
@@ -178,20 +204,21 @@ cli.collect(event_ids)
 cli.collect_odds(event_ids)
 ├── event_odds.request.parse_odds_event_ids(...)
 │   └── 쉼표 분리, 공백 제거, 중복 제거 및 정렬
-├── settings.Settings()
-└── event_odds.collector.collect_event_odds(...)
-    ├── 이벤트마다 bets_api_client.get_event_odds(...)
-    │   └── GET /v2/event/odds?event_id=...&odds_market=1,2,3
-    ├── HTTP·JSON 오류이면 기존 Snapshot 유지 후 실패 결과 생성
-    ├── event_odds.response.analyze_event_odds_response(...)
-    │   ├── success와 results.odds 구조 검증
-    │   └── 반환 마켓 키와 마켓별 레코드 수 계산
-    ├── event_odds.storage.save_event_odds_snapshot(...)
-    │   ├── 같은 UTC 날짜·이벤트 원문을 임시 파일로 원자적 교체
-    │   └── 메타데이터 저장 실패 시 이전 원문 복구
-    ├── event_odds.models.OddsSnapshotMetadata(...)
-    ├── event_odds.storage.save_event_odds_snapshot_metadata(...)
-    └── 이벤트별 성공·실패를 메모리의 OddsCollectionEventResult로 집계
+└── cli._collect_odds_for_event_ids(event_ids)
+    ├── settings.Settings()
+    └── event_odds.collector.collect_event_odds(...)
+        ├── 이벤트마다 bets_api_client.get_event_odds(...)
+        │   └── GET /v2/event/odds?event_id=...&odds_market=1,2,3
+        ├── HTTP·JSON 오류이면 기존 Snapshot 유지 후 실패 결과 생성
+        ├── event_odds.response.analyze_event_odds_response(...)
+        │   ├── success와 results.odds 구조 검증
+        │   └── 반환 마켓 키와 마켓별 레코드 수 계산
+        ├── event_odds.storage.save_event_odds_snapshot(...)
+        │   ├── 같은 UTC 날짜·이벤트 원문을 임시 파일로 원자적 교체
+        │   └── 메타데이터 저장 실패 시 이전 원문 복구
+        ├── event_odds.models.OddsSnapshotMetadata(...)
+        ├── event_odds.storage.save_event_odds_snapshot_metadata(...)
+        └── 이벤트별 성공·실패를 메모리의 OddsCollectionEventResult로 집계
 ```
 
 이벤트 하나의 연결·응답·저장 실패는 다음 이벤트 호출을 막지 않습니다. 유효한 응답만
@@ -469,7 +496,7 @@ data/
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
 | `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
 | `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events`, `get_event_odds` | BETS API HTTP 호출 |

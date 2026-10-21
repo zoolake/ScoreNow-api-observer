@@ -211,13 +211,19 @@ def collect_odds(
     """이벤트별 누적 배당률을 조회하고 일간 최신 Snapshot을 저장합니다."""
 
     requested_event_ids = _parse_odds_event_ids_or_exit(event_ids)
+    typer.echo(f"수집 대상 경기: {len(requested_event_ids)}개")
+    _collect_odds_for_event_ids(requested_event_ids)
+
+
+def _collect_odds_for_event_ids(event_ids: list[str]) -> None:
+    """검증된 이벤트 ID마다 Odds를 수집하고 CLI 종료 정책을 적용합니다."""
+
     try:
         settings = Settings()  # pyright: ignore[reportCallIssue]
     except ValidationError as error:
         typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
-    typer.echo(f"수집 대상 경기: {len(requested_event_ids)}개")
     typer.echo(
         "요청 배당 마켓: " + ",".join(str(market) for market in DEFAULT_ODDS_MARKETS)
     )
@@ -227,7 +233,7 @@ def collect_odds(
         result = collect_event_odds(
             base_url=settings.bets_api_base_url,
             token=settings.bets_api_token.get_secret_value(),
-            event_ids=requested_event_ids,
+            event_ids=event_ids,
         )
     except (OSError, ValueError, ValidationError) as error:
         typer.echo(f"Odds 수집을 처리하지 못했습니다. {error}", err=True)
@@ -555,6 +561,86 @@ def watch_upcoming(
         interval_seconds=interval_seconds,
         max_cycles=max_cycles,
     )
+
+
+@app.command("collect-upcoming-odds")
+def collect_upcoming_odds(
+    within_minutes: int = typer.Option(
+        10,
+        "--within-minutes",
+        min=1,
+        help="현재부터 Odds 수집 대상으로 선택할 시작 예정 범위(분)",
+    ),
+    sport_code: str | None = typer.Option(
+        None,
+        "--sport-code",
+        help="수집할 내부 종목 코드. 생략하면 전체 종목",
+    ),
+    league_labels: str | None = typer.Option(
+        None,
+        "--league-labels",
+        help="수집할 리그 label 목록(쉼표 구분). 생략하면 전체 리그",
+    ),
+) -> None:
+    """곧 시작하는 저장된 Upcoming 후보의 누적 배당률을 한 번 수집합니다."""
+
+    try:
+        normalized_sport_code = normalize_candidate_sport_code(sport_code)
+        normalized_league_labels = parse_candidate_league_labels(league_labels)
+    except InvalidUpcomingCandidateFilterError as error:
+        typer.echo(f"후보 조회 필터가 올바르지 않습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        discovery_paths = find_league_upcoming_discovery_paths()
+        latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
+    except OSError as error:
+        typer.echo(f"Discovery 파일 탐색에 실패했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _print_upcoming_discovery_warnings(latest_discoveries)
+
+    typer.echo(f"저장된 리그 Discovery: {len(discovery_paths)}개")
+    typer.echo(f"사용 가능한 최신 Discovery: {len(latest_discoveries.selected)}개")
+    if not latest_discoveries.selected:
+        typer.echo("사용 가능한 리그 Discovery가 없습니다.", err=True)
+        raise typer.Exit(code=1)
+
+    now = _utc_now()
+    try:
+        selection = select_upcoming_candidates(
+            latest_discoveries.selected,
+            now=now,
+            within_minutes=within_minutes,
+            sport_code=normalized_sport_code,
+            league_labels=normalized_league_labels,
+        )
+    except ValueError as error:
+        typer.echo(f"예정 경기 후보를 계산하지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"기준 시각(UTC): {now.isoformat()}")
+    typer.echo(f"기준 시각(KST): {now.astimezone(KST).isoformat()}")
+    typer.echo(f"수집 범위: 현재부터 {within_minutes}분 이내")
+    typer.echo(f"Odds 수집 후보 경기: {len(selection.candidates)}개")
+
+    if selection.duplicate_event_ids:
+        typer.echo(
+            "중복된 이벤트 ID는 최신 Discovery의 값으로 한 번만 수집합니다: "
+            + ", ".join(selection.duplicate_event_ids),
+            err=True,
+        )
+
+    if not selection.candidates:
+        typer.echo("현재 Odds를 수집할 예정 경기 후보가 없습니다.")
+        return
+
+    for index, candidate in enumerate(selection.candidates, start=1):
+        _print_upcoming_candidate(index=index, candidate=candidate, now=now)
+
+    event_ids = [candidate.event.event_id for candidate in selection.candidates]
+    typer.echo("")
+    _collect_odds_for_event_ids(event_ids)
 
 
 @app.command()

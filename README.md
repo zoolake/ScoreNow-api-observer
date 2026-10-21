@@ -118,7 +118,23 @@ uv run observer watch-upcoming \
 감지 후 15분 추가 수집을 마친 이벤트는 다음 주기부터 제외하므로 이후 배치 수와 실제
 호출 횟수는 줄어들 수 있습니다. 이 명령은 Upcoming API를 다시 호출하지 않습니다.
 
-### 8. 첫 응답 수집
+### 8. 곧 시작하는 경기의 배당률 수집
+
+저장된 Discovery에서 현재부터 10분 이내 시작하는 경기를 선택해 Event Odds API를
+이벤트별로 한 번 호출합니다. Upcoming API는 다시 호출하지 않습니다.
+
+```bash
+uv run observer collect-upcoming-odds \
+  --within-minutes 10 \
+  --sport-code baseball \
+  --league-labels kbo,mlb
+```
+
+후보는 예정 시각만으로 선택하며 Discovery의 `time_status`는 조건으로 사용하지
+않습니다. 이미 Odds Snapshot이 있는 이벤트도 다시 호출하고, 유효한 최신 응답으로
+같은 UTC 날짜의 Snapshot을 교체합니다.
+
+### 9. 첫 응답 수집
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1
@@ -137,7 +153,7 @@ data/raw/event-view/YYYY-MM-DD/...
 data/metadata/event-view/YYYY-MM-DD/...
 ```
 
-### 9. 반복 수집 및 구조 변화 관찰
+### 10. 반복 수집 및 구조 변화 관찰
 
 다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
@@ -157,7 +173,7 @@ uv run observer watch \
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
-### 10. 저장된 최근 응답 비교
+### 11. 저장된 최근 응답 비교
 
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
@@ -165,7 +181,7 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
-### 11. 저장된 자료의 Markdown 보고서 생성
+### 12. 저장된 자료의 Markdown 보고서 생성
 
 ```bash
 uv run observer report
@@ -238,6 +254,34 @@ uv run observer upcoming-candidates --within-minutes 10
 - 사용 가능한 Discovery는 있지만 범위 안의 경기가 없으면 후보 `0개`와 종료 코드
   `0`을 반환합니다. 사용할 수 있는 Discovery가 전혀 없으면 종료 코드 `1`, 잘못된
   필터나 시간 범위는 종료 코드 `2`입니다.
+
+### `observer collect-upcoming-odds`
+
+`upcoming-candidates`와 동일한 기준으로 저장된 Discovery에서 곧 시작할 경기를 고른
+뒤, 선택한 이벤트마다 Event Odds API를 한 번 호출합니다. Upcoming API는 호출하지
+않습니다.
+
+```bash
+uv run observer collect-upcoming-odds \
+  --within-minutes 10 \
+  --sport-code baseball \
+  --league-labels kbo,mlb
+```
+
+- `--within-minutes`: 현재부터 Odds 수집 대상으로 포함할 분 단위 범위입니다. 기본값은
+  `10`이며 최소값은 `1`입니다.
+- `--sport-code`, `--league-labels`: `upcoming-candidates`와 동일한 선택 필터입니다.
+- `now <= scheduled_at_utc <= now + N분`인 이벤트를 선택합니다. `time_status`는 후보
+  조건으로 사용하지 않습니다.
+- 같은 이벤트가 여러 Discovery에 있으면 최신 Discovery의 값으로 한 번만 수집합니다.
+- 기존 Odds Snapshot의 존재 여부는 후보 조건이 아닙니다. 명령을 다시 실행하면 같은
+  이벤트도 다시 호출하고, 유효한 응답만 해당 UTC 날짜의 최신 Snapshot으로
+  교체합니다.
+- 사용 가능한 Discovery는 있지만 후보가 없으면 API 설정을 읽거나 API를 호출하지
+  않고 종료 코드 `0`으로 끝납니다. 사용할 수 있는 Discovery가 전혀 없으면 종료
+  코드 `1`, 잘못된 필터나 API 설정은 종료 코드 `2`입니다.
+- 이벤트별 수집 실패 정책은 `collect-odds`와 같습니다. 일부 성공은 경고와 종료 코드
+  `0`, 모두 실패하면 종료 코드 `1`을 반환합니다.
 
 ### `observer watch-upcoming`
 
