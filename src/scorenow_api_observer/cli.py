@@ -9,6 +9,15 @@ import typer
 from jinja2 import TemplateError
 from pydantic import ValidationError
 
+from scorenow_api_observer.event_odds.collector import (
+    DEFAULT_ODDS_MARKETS,
+    OddsCollectionResult,
+    collect_event_odds,
+)
+from scorenow_api_observer.event_odds.request import (
+    InvalidOddsEventIdsError,
+    parse_odds_event_ids,
+)
 from scorenow_api_observer.event_view.collector import (
     CaptureResult,
     capture_event_view,
@@ -188,6 +197,53 @@ def collect(
             err=True,
         )
         raise typer.Exit(code=1)
+
+
+@app.command("collect-odds")
+def collect_odds(
+    event_ids: str = typer.Option(
+        ...,
+        "--event-ids",
+        "-e",
+        help="쉼표로 구분한 Event Odds 수집 대상 외부 API 경기 ID",
+    ),
+) -> None:
+    """이벤트별 누적 배당률을 조회하고 일간 최신 Snapshot을 저장합니다."""
+
+    requested_event_ids = _parse_odds_event_ids_or_exit(event_ids)
+    try:
+        settings = Settings()  # pyright: ignore[reportCallIssue]
+    except ValidationError as error:
+        typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    typer.echo(f"수집 대상 경기: {len(requested_event_ids)}개")
+    typer.echo(
+        "요청 배당 마켓: " + ",".join(str(market) for market in DEFAULT_ODDS_MARKETS)
+    )
+    typer.echo("BETS Event Odds API를 이벤트별로 호출합니다.")
+
+    try:
+        result = collect_event_odds(
+            base_url=settings.bets_api_base_url,
+            token=settings.bets_api_token.get_secret_value(),
+            event_ids=requested_event_ids,
+        )
+    except (OSError, ValueError, ValidationError) as error:
+        typer.echo(f"Odds 수집을 처리하지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _print_odds_collection_summary(result)
+
+    if result.status == "failed":
+        typer.echo("모든 이벤트의 배당률 수집에 실패했습니다.", err=True)
+        raise typer.Exit(code=1)
+
+    if result.status == "partial":
+        typer.echo(
+            "일부 이벤트의 배당률 수집에 실패했습니다.",
+            err=True,
+        )
 
 
 @app.command()
@@ -1142,6 +1198,34 @@ def _print_observation_save_failures(result: CaptureResult) -> None:
         )
 
 
+def _print_odds_collection_summary(result: OddsCollectionResult) -> None:
+    """Event Odds 명령의 전체 상태와 이벤트별 결과를 출력합니다."""
+
+    captured_count = sum(
+        event_result.status == "captured" for event_result in result.event_results
+    )
+    failed_count = len(result.event_results) - captured_count
+
+    typer.echo(f"Odds 수집 상태: {result.status}")
+    typer.echo(f"Snapshot 저장: {captured_count}개")
+    typer.echo(f"처리 실패: {failed_count}개")
+
+    for event_result in result.event_results:
+        if event_result.status == "captured":
+            typer.echo(
+                f"[{event_result.event_id}] captured / "
+                f"원문: {event_result.raw_file_path} / "
+                f"메타데이터: {event_result.metadata_file_path}"
+            )
+            continue
+
+        typer.echo(
+            f"[{event_result.event_id}] {event_result.status} / "
+            f"{event_result.error_type}: {event_result.error_message}",
+            err=True,
+        )
+
+
 def _parse_requested_event_ids_or_exit(value: str) -> list[str]:
     try:
         requested_event_ids = parse_requested_event_ids(value)
@@ -1153,6 +1237,17 @@ def _parse_requested_event_ids_or_exit(value: str) -> list[str]:
         raise typer.Exit(code=2) from None
 
     return requested_event_ids
+
+
+def _parse_odds_event_ids_or_exit(value: str) -> list[str]:
+    try:
+        return parse_odds_event_ids(value)
+    except InvalidOddsEventIdsError as error:
+        typer.echo(
+            f"이벤트 ID 입력이 올바르지 않습니다. {error}",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
 
 
 def _parse_target_date_or_exit(value: str) -> date:

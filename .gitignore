@@ -27,6 +27,8 @@ data/raw/*
 data/observations/*
 !data/observations/.gitkeep
 
+data/runs/*
+
 data/discoveries/*
 !data/discoveries/.gitkeep
 

@@ -57,3 +57,29 @@ def test_get_upcoming_events_requests_target_sport_league_and_utc_day(
         },
         timeout=30.0,
     )
+
+
+def test_get_event_odds_requests_one_event_and_selected_markets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = httpx.Response(200, json={"success": 1, "results": {"odds": {}}})
+    httpx_get = Mock(return_value=response)
+    monkeypatch.setattr(bets_api_client.httpx, "get", httpx_get)
+
+    result = bets_api_client.get_event_odds(
+        base_url="https://example.test/",
+        token="test-token",
+        event_id="EVENT-A",
+        odds_markets=(1, 2, 3),
+    )
+
+    assert result is response
+    httpx_get.assert_called_once_with(
+        "https://example.test/v2/event/odds",
+        params={
+            "token": "test-token",
+            "event_id": "EVENT-A",
+            "odds_market": "1,2,3",
+        },
+        timeout=30.0,
+    )

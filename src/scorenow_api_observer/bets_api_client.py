@@ -4,6 +4,7 @@ import httpx
 
 EVENT_VIEW_ENDPOINT = "/v1/event/view"
 UPCOMING_EVENTS_ENDPOINT = "/v3/events/upcoming"
+EVENT_ODDS_ENDPOINT = "/v2/event/odds"
 
 
 def get_event_view(
@@ -46,6 +47,28 @@ def get_upcoming_events(
             "sport_id": sport_id,
             "league_id": league_id,
             "day": target_date.strftime("%Y%m%d"),
+        },
+        timeout=30.0,
+    )
+
+
+def get_event_odds(
+    *,
+    base_url: str,
+    token: str,
+    event_id: str,
+    odds_markets: tuple[int, ...],
+) -> httpx.Response:
+    """BETS API에서 이벤트 하나의 지정된 마켓 배당률을 조회합니다."""
+
+    url = f"{base_url.rstrip('/')}{EVENT_ODDS_ENDPOINT}"
+
+    return httpx.get(
+        url,
+        params={
+            "token": token,
+            "event_id": event_id,
+            "odds_market": ",".join(str(market) for market in odds_markets),
         },
         timeout=30.0,
     )

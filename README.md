@@ -294,6 +294,29 @@ uv run observer collect --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
 - 고유 ID가 10개를 초과하면 최대 10개씩 나눠 각 배치를 한 번 호출합니다. 일부 배치가
   실패해도 남은 배치를 계속 처리한 뒤 종료 코드 `1`로 끝납니다.
 
+### `observer collect-odds`
+
+지정한 이벤트마다 Event Odds API를 한 번 호출하여 승무패·아시안 핸디캡·언더/오버
+누적 배당률을 수집합니다.
+
+```bash
+uv run observer collect-odds --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2
+```
+
+- `--event-ids`, `-e`: 쉼표로 구분한 이벤트 ID입니다. 공백과 중복을 제거한 뒤
+  문자열 기준으로 정렬합니다.
+- Event Odds API는 한 요청에 이벤트 하나만 받으므로 이벤트 ID마다 독립적으로
+  `odds_market=1,2,3`을 호출합니다.
+- HTTP 오류, JSON·응답 구조 오류가 발생하면 기존 Snapshot을 바꾸지 않습니다.
+- 유효한 응답은 같은 UTC 날짜·이벤트 ID의 원문과 SnapshotMetadata를 최신 값으로
+  교체합니다. 원문 응답 바이트는 변형하지 않습니다.
+- 이벤트 하나가 실패해도 나머지 이벤트 수집을 계속하며, 실패 이벤트와 원인을 CLI에
+  출력합니다. 실패 실행 이력은 별도 파일로 저장하지 않습니다.
+- 전체 성공은 `completed`, 일부 성공은 `partial`, 전체 실패는 `failed`입니다.
+  `partial`은 경고와 종료 코드 `0`, `failed`는 종료 코드 `1`을 반환합니다.
+- 잘못된 이벤트 ID 입력이나 API 설정 오류는 API를 호출하지 않고 종료 코드 `2`로
+  끝납니다.
+
 ### `observer watch`
 
 Event View API를 반복 호출하여 매 응답의 원문과 메타데이터를 저장합니다. 직전 수집이 있으면 현재 응답과 JSON 구조를 비교하고, 구조 변화가 발견된 경우에만 변화 기록을 추가로 저장합니다.
@@ -478,8 +501,10 @@ uv run observer inspect-timeline --event-id BETS_EVENT_ID
 ```text
 data/
 ├── raw/event-view/YYYY-MM-DD/{capture_file}
+├── raw/event-odds/{UTC 수집 날짜}/{event_id}.json
 ├── raw/events-upcoming/{KST 호출 날짜}/{league_label}_{KST 시각}_KST_capture.json
 ├── metadata/event-view/YYYY-MM-DD/{capture_file}
+├── metadata/event-odds/{UTC 수집 날짜}/{event_id}.json
 ├── metadata/events-upcoming/{KST 호출 날짜}/{raw와 같은 파일명}
 ├── observations/event-view/{event_id}/{capture_file}
 ├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
@@ -500,6 +525,24 @@ reports/
 보고서 파일명에는 UTC 생성 시각이 `YYYYMMDDTHHMMSSffffffZ` 형식으로 들어갑니다.
 같은 실행에서 생성한 모든 파일은 동일한 시각 접두사를 사용합니다. 기존 보고서와 같은
 경로가 존재하면 덮어쓰지 않습니다.
+
+### Event Odds Snapshot
+
+Event Odds 응답은 이전 배당률 레코드를 누적하여 제공하므로 호출마다 원문을 추가하지
+않고, 같은 UTC 날짜의 이벤트별 최신 Snapshot을 유지합니다.
+
+```text
+data/raw/event-odds/2026-10-22/12345678.json
+data/metadata/event-odds/2026-10-22/12345678.json
+```
+
+원문은 API 응답 바이트이고 `OddsSnapshotMetadata`에는 토큰을 제외한 요청 조건,
+반환된 마켓 키, 마켓별 레코드 수, HTTP 및 파일 정보가 들어갑니다. 유효하지 않은
+응답은 기존 Snapshot을 교체하지 않습니다.
+
+현재 명령의 이벤트별 결과는 메모리에서 `captured`, `request_failed`,
+`response_invalid`, `storage_failed`로 구분하여 CLI에 출력합니다. 실행 이력은 별도
+파일로 남기지 않으며, 실패한 이벤트가 있어도 기존의 정상 Snapshot은 유지합니다.
 
 ### Upcoming 원문·메타데이터·Discovery
 
