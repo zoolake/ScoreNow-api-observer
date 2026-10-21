@@ -9,6 +9,7 @@ from scorenow_api_observer.reporting.storage import (
     build_field_report_output_path,
     build_league_report_output_path,
     build_report_output_path,
+    build_timeline_report_output_path,
     save_report_text,
 )
 
@@ -146,3 +147,23 @@ def test_build_league_report_output_path_handles_unclassified_league(
     )
 
     assert result.name == "20261020T123000000000Z_unclassified.md"
+
+
+def test_build_timeline_report_output_path_uses_sport_and_event_directory(
+    tmp_path: Path,
+) -> None:
+    result = build_timeline_report_output_path(
+        generated_at=datetime(2026, 10, 20, 12, 30, tzinfo=UTC),
+        sport_code="baseball",
+        event_id="123",
+        base_directory=tmp_path / "reports",
+    )
+
+    assert result == (
+        tmp_path
+        / "reports"
+        / "2026-10-20"
+        / "timeline"
+        / "baseball"
+        / "20261020T123000000000Z_123.md"
+    )

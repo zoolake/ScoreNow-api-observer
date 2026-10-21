@@ -3,6 +3,13 @@ from pathlib import Path
 
 import pytest
 
+from scorenow_api_observer.reporting.event_timeline import (
+    EventTimelineAnalysis,
+    EventTimelineRow,
+    TimelineFieldChange,
+    TimelineFieldFailure,
+    TimelineFieldState,
+)
 from scorenow_api_observer.reporting.field_inspection import (
     EventFieldInspection,
     FieldInspectionAnalysis,
@@ -13,6 +20,7 @@ from scorenow_api_observer.reporting.field_inspection import (
 )
 from scorenow_api_observer.reporting.markdown import (
     render_endpoint_report_markdown,
+    render_event_timeline_markdown,
     render_field_inspection_markdown,
     render_league_report_markdown,
     render_sport_report_markdown,
@@ -643,3 +651,94 @@ def test_render_field_inspection_markdown_describes_explicit_event_without_field
     assert (
         "이벤트 `123`에서는 `$.scores.10` 경로가 한 번도 관측되지 않았습니다." in result
     )
+
+
+def test_render_event_timeline_markdown_renders_all_row_kinds() -> None:
+    initial_time = datetime(2026, 10, 20, 12, 30, tzinfo=UTC)
+    analysis = EventTimelineAnalysis(
+        event_id="123",
+        sport_code="baseball",
+        configured_paths=("$.time_status", "$.scores"),
+        input_observation_count=4,
+        analyzed_observation_count=3,
+        rows=[
+            EventTimelineRow(
+                captured_at=initial_time,
+                raw_file_path=Path("data/raw/initial.json"),
+                kind="initial",
+                initial_states=[
+                    TimelineFieldState(
+                        path="$.time_status",
+                        kind="scalar",
+                        value=1,
+                    ),
+                    TimelineFieldState(path="$.scores", kind="object"),
+                    TimelineFieldState(
+                        path="$.scores.10.home",
+                        kind="missing",
+                    ),
+                ],
+                changes=[],
+                failures=[],
+            ),
+            EventTimelineRow(
+                captured_at=initial_time,
+                raw_file_path=Path("data/raw/unchanged.json"),
+                kind="unchanged",
+                initial_states=[],
+                changes=[],
+                failures=[],
+            ),
+            EventTimelineRow(
+                captured_at=initial_time,
+                raw_file_path=Path("data/raw/changed.json"),
+                kind="changed",
+                initial_states=[],
+                changes=[
+                    TimelineFieldChange(
+                        path="$.scores.10.home",
+                        previous=TimelineFieldState(
+                            path="$.scores.10.home",
+                            kind="missing",
+                        ),
+                        current=TimelineFieldState(
+                            path="$.scores.10.home",
+                            kind="scalar",
+                            value="1|0",
+                        ),
+                    )
+                ],
+                failures=[],
+            ),
+            EventTimelineRow(
+                captured_at=initial_time,
+                raw_file_path=Path("data/raw/failed.json"),
+                kind="failed",
+                initial_states=[],
+                changes=[],
+                failures=[
+                    TimelineFieldFailure(
+                        path="$.scores",
+                        error_message="배열 값",
+                    )
+                ],
+            ),
+        ],
+        resolution_failures=[],
+    )
+
+    result = render_event_timeline_markdown(
+        analysis=analysis,
+        generated_at=datetime(2026, 10, 20, 13, 0, tzinfo=UTC),
+    )
+
+    assert result.startswith("# Event View 이벤트 타임라인 보고서\n")
+    assert "- 이벤트 ID: `123`" in result
+    assert "| 4 | 3 | 1 | 1 |" in result
+    assert "최초 상태<br>`$.time_status` = 1" in result
+    assert "`$.scores` = &lt;객체&gt;" in result
+    assert "`$.scores.10.home` = &lt;필드 없음&gt;" in result
+    assert "|  | 변화 없음 | data/raw/unchanged.json |" in result
+    assert '| 🟠 | `$.scores.10.home`: &lt;필드 없음&gt; → "1\\|0"' in result
+    assert "| 🔴 | `$.scores`: 배열 값 | data/raw/failed.json |" in result
+    assert result.endswith("\n")

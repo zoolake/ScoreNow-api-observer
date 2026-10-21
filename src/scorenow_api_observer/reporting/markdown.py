@@ -6,6 +6,10 @@ from html import escape
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
+from scorenow_api_observer.reporting.event_timeline import (
+    EventTimelineAnalysis,
+    TimelineFieldState,
+)
 from scorenow_api_observer.reporting.field_inspection import (
     FieldInspectionAnalysis,
 )
@@ -64,6 +68,7 @@ def _create_markdown_environment() -> Environment:
     )
     environment.filters["markdown_table_cell"] = _escape_markdown_table_cell
     environment.filters["field_value"] = _format_field_value
+    environment.filters["timeline_field_state"] = _format_timeline_field_state
     environment.filters["inspect_field_command"] = _build_inspect_field_command
     return environment
 
@@ -74,6 +79,16 @@ def _format_field_value(present: bool, value: JsonScalar) -> str:
     if not present:
         return "<필드 없음>"
     return json.dumps(value, ensure_ascii=False)
+
+
+def _format_timeline_field_state(state: TimelineFieldState) -> str:
+    """타임라인 상태의 누락·객체·단일 값을 서로 구분하여 표시합니다."""
+
+    if state.kind == "missing":
+        return "<필드 없음>"
+    if state.kind == "object":
+        return "<객체>"
+    return json.dumps(state.value, ensure_ascii=False)
 
 
 def _build_inspect_field_command(path: str, sport_code: str) -> str:
@@ -336,3 +351,18 @@ def render_field_inspection_markdown(
             "disappeared": "사라짐",
         },
     )
+
+
+def render_event_timeline_markdown(
+    *,
+    analysis: EventTimelineAnalysis,
+    generated_at: datetime,
+) -> str:
+    """이벤트의 여러 설정 필드 타임라인을 Markdown 문자열로 렌더링합니다."""
+
+    template = _MARKDOWN_ENVIRONMENT.get_template("event_view_timeline.md.jinja")
+    content = template.render(
+        analysis=analysis,
+        generated_at=generated_at,
+    )
+    return f"{content.rstrip()}\n"

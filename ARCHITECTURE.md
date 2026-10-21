@@ -6,7 +6,8 @@
 현재 Upcoming 엔드포인트로 관찰할 경기를 탐색하고 Event View 엔드포인트를
 수집·비교합니다. 보고서 분석은
 `EventViewReportAnalysis`, endpoint 전체·종목별·리그별 Markdown 렌더러와 `report` CLI,
-이벤트별 필드 변화 타임라인을 만드는 `inspect-field` CLI가 구현되어 있습니다.
+이벤트별 단일 필드 변화를 만드는 `inspect-field`와 여러 주요 필드의 맥락을 같은
+시간축에서 보여주는 `inspect-timeline` CLI가 구현되어 있습니다.
 HTML 렌더러는 아직 구현되지 않았습니다.
 
 ## 전체 구조
@@ -20,7 +21,8 @@ CLI
 ├── watch             ── collect 반복 + 이벤트별 직전 응답 비교 + 변화 기록
 ├── compare           ── 저장된 특정 이벤트의 최근 응답 2개 비교
 ├── report            ── 저장된 전체 자료 분석 + endpoint·종목·리그별 Markdown 보고서 저장
-└── inspect-field     ── 저장된 특정 필드의 이벤트별 값 변화 보고서 저장
+├── inspect-field     ── 저장된 특정 필드의 이벤트별 값 변화 보고서 저장
+└── inspect-timeline  ── 이벤트 하나의 설정 필드 통합 타임라인 보고서 저장
 
 보고서 분석 라이브러리
 └── 저장 파일 탐색 → 부분 성공 로드 → 이벤트 해석 → 보고서용 집계
@@ -316,6 +318,35 @@ cli.inspect_field(sport_code, field_path, event_id)
 타임라인에 포함합니다. 배열은 원소의 안정적인 식별 규칙이 없으므로 현재 분석
 범위에서 제외합니다.
 
+## `inspect-timeline` 호출 트리
+
+`inspect-timeline`은 이벤트 ID만 입력받으며 저장된 Observation에서 종목을 추론하고,
+해당 종목의 타임라인 설정을 적용합니다. BETS API 설정을 읽거나 API를 호출하지
+않습니다.
+
+```text
+cli.inspect_timeline(event_id)
+├── sport_config.load_sport_codes_by_id(...)
+├── reporting.timeline_config.load_timeline_fields_config(...)
+│   ├── config/event_view_timeline_fields.yaml 로드
+│   └── 종목·객체 경로·중복 및 상하위 경로 중첩 검증
+├── event_view.storage.find_event_observation_paths(...)
+├── reporting.sources.resolve_observed_events(...)
+├── reporting.event_timeline.analyze_event_timeline(...)
+│   ├── 이벤트 ID가 같은 Observation 선택과 종목 추론
+│   ├── 설정된 중첩 객체를 하위 단일 값 경로로 재귀 전개
+│   ├── 모든 Observation의 최초 상태·변화·변화 없음 계산
+│   └── 배열이 발견된 Observation은 실패 행으로 기록
+├── reporting.markdown.render_event_timeline_markdown(...)
+│   └── reporting/templates/markdown/event_view_timeline.md.jinja 렌더링
+├── reporting.storage.build_timeline_report_output_path(...)
+└── reporting.storage.save_report_text(...)
+```
+
+분석 실패 행은 직전 유효 상태를 바꾸지 않습니다. 따라서 다음 유효 Observation은
+마지막으로 정상 분석된 시점과 비교됩니다. `null`, 경로 누락, 단일 값 자료형 차이는
+서로 다른 상태이며, 객체는 객체 자체의 존재와 펼친 하위 경로를 함께 비교합니다.
+
 현재 `EventViewReportAnalysis`는 다음 정보를 가집니다.
 
 - 응답 분석 상태별 Capture 수
@@ -395,6 +426,7 @@ data/
 | `StructureChangeRecord` | 같은 이벤트의 두 시점 사이에서 발견한 구조 변화 | 포함하지 않음 |
 | `ObservedEvent` | 보고서 분석 중 원문에서 해석한 이벤트와 출처 | 메모리에서만 포함 |
 | `EventViewReportAnalysis` | 보고서 렌더링에 사용할 집계 결과 | 원문 대신 요약 포함 |
+| `EventTimelineAnalysis` | 이벤트 하나의 설정 필드별 시간순 상태와 변화 | 원문 대신 변화·출처 경로 포함 |
 | `UpcomingCaptureMetadata` | Upcoming 호출 한 번의 조건·응답·이슈 | 포함하지 않음 |
 | `LeagueUpcomingDiscovery` | 한 리그의 조회 결과·이벤트 또는 실패 내역 | 이벤트 요약만 포함 |
 | `UpcomingDiscoveryRun` | 한 CLI 실행의 대상과 리그별 Discovery 경로 | 포함하지 않음 |
@@ -403,7 +435,7 @@ data/
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect`, `watch`, `compare`, `report`, `inspect_field` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
 | `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
 | `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events` | BETS API HTTP 호출 |
@@ -427,9 +459,11 @@ data/
 | `reporting/analysis.py` | `summarize_*`, `analyze_event_view_report` | 종목·리그별 보고서용 집계와 전체 분석 결과 조합 |
 | `reporting/field_path.py` | `validate_field_path`, `resolve_json_field`, `flatten_json_object_scalars` | 보고서 분석에서 공유하는 JSON 객체 경로 처리 |
 | `reporting/field_inspection.py` | `analyze_field_inspection` | 중첩 객체 전개와 이벤트별 값 변화 계산 |
+| `reporting/event_timeline.py` | `analyze_event_timeline` | 이벤트 종목 추론과 설정된 여러 필드의 통합 시간순 변화 계산 |
+| `reporting/timeline_config.py` | `load_timeline_fields_config` | 종목별 타임라인 경로 설정 로드·검증 |
 | `reporting/tracked_field_config.py` | `load_tracked_fields_config` | 종목별 값 집계 경로 설정 로드·검증 |
-| `reporting/markdown.py` | `render_endpoint_report_markdown`, `render_sport_report_markdown`, `render_league_report_markdown`, `render_field_inspection_markdown` | endpoint·종목·리그·필드 분석 결과의 Markdown 렌더링 |
-| `reporting/storage.py` | `build_report_output_path`, `build_field_report_output_path`, `build_league_report_output_path`, `save_report_text` | 날짜별 보고서와 종목·리그 하위 경로 계산 및 텍스트 저장 |
+| `reporting/markdown.py` | `render_endpoint_report_markdown`, `render_sport_report_markdown`, `render_league_report_markdown`, `render_field_inspection_markdown`, `render_event_timeline_markdown` | endpoint·종목·리그·필드·이벤트 타임라인 분석 결과의 Markdown 렌더링 |
+| `reporting/storage.py` | `build_report_output_path`, `build_field_report_output_path`, `build_league_report_output_path`, `build_timeline_report_output_path`, `save_report_text` | 날짜별 보고서와 종목·리그·타임라인 하위 경로 계산 및 텍스트 저장 |
 
 ## 문서 갱신 기준
 

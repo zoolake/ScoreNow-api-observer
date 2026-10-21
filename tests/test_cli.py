@@ -23,6 +23,7 @@ from scorenow_api_observer.event_view.models import (
 from scorenow_api_observer.event_view.observation import (
     InvalidEventObservationReferenceError,
 )
+from scorenow_api_observer.reporting.event_timeline import EventTimelineAnalysis
 from scorenow_api_observer.reporting.field_inspection import (
     EventFieldInspection,
     FieldInspectionAnalysis,
@@ -38,6 +39,7 @@ from scorenow_api_observer.reporting.models import (
     ObservedEventResolutionResult,
     SportObservationSummary,
 )
+from scorenow_api_observer.reporting.timeline_config import TimelineFieldsConfig
 from scorenow_api_observer.reporting.tracked_field_config import (
     TrackedFieldsConfig,
 )
@@ -1145,3 +1147,107 @@ def test_inspect_field_rejects_array_path_before_loading_observations(
     assert result.exit_code == 2
     assert not observations_searched
     assert "배열을 포함한 필드 경로는 지원하지 않습니다." in result.output
+
+
+def test_inspect_timeline_creates_report_from_stored_observations_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_at = datetime(2026, 10, 20, 12, 30, tzinfo=UTC)
+    observation_paths = [Path("data/observations/123/first.json")]
+    analysis = EventTimelineAnalysis(
+        event_id="123",
+        sport_code="baseball",
+        configured_paths=("$.time_status", "$.scores"),
+        input_observation_count=2,
+        analyzed_observation_count=2,
+        rows=[],
+        resolution_failures=[],
+    )
+    analyzed_event_ids: list[str] = []
+    output_path = Path("reports/event-view/timeline/baseball/report.md")
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz: object) -> datetime:
+            assert tz is UTC
+            return generated_at
+
+    def analyze_timeline(**kwargs: object) -> EventTimelineAnalysis:
+        analyzed_event_ids.append(str(kwargs["event_id"]))
+        return analysis
+
+    monkeypatch.setattr(cli, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: pytest.fail("inspect-timeline 명령은 API 설정을 읽으면 안 됩니다."),
+    )
+    monkeypatch.setattr(cli, "load_sport_codes_by_id", lambda: {"16": "baseball"})
+    monkeypatch.setattr(
+        cli,
+        "load_timeline_fields_config",
+        lambda: TimelineFieldsConfig(
+            paths_by_sport_code={"baseball": ("$.time_status", "$.scores")}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "find_event_observation_paths",
+        lambda: observation_paths,
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_observed_events",
+        lambda **_kwargs: ObservedEventResolutionResult([], []),
+    )
+    monkeypatch.setattr(cli, "analyze_event_timeline", analyze_timeline)
+    monkeypatch.setattr(
+        cli,
+        "render_event_timeline_markdown",
+        lambda **_kwargs: "timeline report\n",
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_timeline_report_output_path",
+        lambda **_kwargs: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "save_report_text",
+        lambda *, content, output_path: output_path,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["inspect-timeline", "--event-id", " 123 "],
+    )
+
+    assert result.exit_code == 0
+    assert analyzed_event_ids == ["123"]
+    assert "분석 이벤트: 123" in result.output
+    assert "추론 종목: baseball" in result.output
+    assert "입력 Observation: 2개" in result.output
+    assert "분석 Observation: 2개" in result.output
+    assert f"타임라인 보고서 저장 위치: {output_path}" in result.output
+
+
+def test_inspect_timeline_rejects_empty_event_id_before_loading_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations_searched = False
+
+    def find_observations() -> list[Path]:
+        nonlocal observations_searched
+        observations_searched = True
+        return []
+
+    monkeypatch.setattr(cli, "find_event_observation_paths", find_observations)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["inspect-timeline", "--event-id", " "],
+    )
+
+    assert result.exit_code == 2
+    assert not observations_searched
+    assert "이벤트 ID가 비어 있습니다." in result.output

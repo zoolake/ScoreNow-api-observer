@@ -422,6 +422,35 @@ uv run observer inspect-field \
 - 잘못된 경로·종목·이벤트 입력은 종료 코드 `2`, 분석 대상 없음 또는 보고서 생성
   실패는 종료 코드 `1`로 끝납니다.
 
+### `observer inspect-timeline`
+
+저장된 EventObservation과 원문을 사용하여 이벤트 하나의 주요 필드를 같은 시간축에서
+비교하는 Markdown 보고서를 생성합니다. BETS API는 호출하지 않습니다.
+
+```bash
+uv run observer inspect-timeline --event-id BETS_EVENT_ID
+```
+
+타임라인에 표시할 필드는
+[`config/event_view_timeline_fields.yaml`](config/event_view_timeline_fields.yaml)에
+종목별로 등록합니다. 필드의 표시 순서도 설정 순서를 따릅니다.
+
+- 이벤트 ID에 해당하는 저장 Observation에서 종목을 자동으로 추론합니다. 일부
+  Observation의 종목을 분류할 수 없어도, 분류된 나머지 표본이 한 종목으로 일치하면
+  함께 분석합니다. 서로 다른 종목이 관측되거나 모두 분류할 수 없으면 실패합니다.
+- 모든 Observation을 시간순으로 표시합니다. 최초 유효 시점은 전체 상태를, 이후
+  시점은 `변화 없음` 또는 직전 유효 시점과의 차이를 보여줍니다.
+- 🟠은 필드 변화, 🔴은 해당 Observation의 분석 실패를 뜻합니다.
+- 중첩 객체 설정은 하위 단일 값 경로로 재귀적으로 펼칩니다. `null`, 필드 누락,
+  값의 자료형 변화를 서로 다른 상태로 비교합니다.
+- 배열은 지원하지 않습니다. 설정 경로나 그 하위에서 배열이 발견된 Observation은
+  실패 행으로 남기고, 다음 Observation은 마지막 유효 상태와 비교합니다.
+- 결과는
+  `reports/event-view/{UTC 날짜}/timeline/{sport_code}/{generated_at}_{event_id}.md`에
+  저장합니다.
+- 잘못된 이벤트 ID나 설정은 종료 코드 `2`, 분석 대상 없음·종목 추론 실패·보고서
+  생성 실패는 종료 코드 `1`로 끝납니다.
+
 ## 다중 이벤트 처리 원칙
 
 - **Capture**는 Event View API 요청 한 번의 기록입니다. 요청 전체의 원문과 HTTP·분석 메타데이터를 한 번만 저장합니다.
@@ -464,7 +493,8 @@ reports/
     ├── {generated_at}_endpoint.md
     ├── {generated_at}_sport_{sport_code}.md
     ├── {generated_at}_sport_unclassified.md
-    └── field/{sport_code}/{generated_at}_{field_path}.md
+    ├── field/{sport_code}/{generated_at}_{field_path}.md
+    └── timeline/{sport_code}/{generated_at}_{event_id}.md
 ```
 
 보고서 파일명에는 UTC 생성 시각이 `YYYYMMDDTHHMMSSffffffZ` 형식으로 들어갑니다.

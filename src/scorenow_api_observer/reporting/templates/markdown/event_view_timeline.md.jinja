@@ -1,0 +1,37 @@
+# Event View 이벤트 타임라인 보고서
+
+- 이벤트 ID: `{{ analysis.event_id }}`
+- 종목: `{{ analysis.sport_code }}`
+- 생성 시각: `{{ generated_at.isoformat() }}`
+- 설정 경로: {% for path in analysis.configured_paths %}`{{ path }}`{% if not loop.last %}, {% endif %}{% endfor %}
+
+## 분석 개요
+
+| 입력 Observation | 분석 Observation | 분석 실패 | 변화 감지 |
+| ---: | ---: | ---: | ---: |
+| {{ analysis.input_observation_count }} | {{ analysis.analyzed_observation_count }} | {{ analysis.failed_observation_count }} | {{ analysis.changed_observation_count }} |
+
+`null`은 필드가 존재하면서 값이 `null`인 상태이고, `&lt;필드 없음&gt;`은 경로가
+응답에 존재하지 않는 상태입니다. `&lt;객체&gt;`인 설정 경로는 하위 단일 값 경로로
+펼쳐서 함께 비교합니다. 🟠은 직전 유효 Observation과의 변화, 🔴은 해당
+Observation의 분석 실패를 뜻합니다.
+
+## Observation 타임라인
+
+| 수집 시각(UTC) | 표시 | 변경 내용 | 원문 경로 |
+| --- | :---: | --- | --- |
+{% for row in analysis.rows -%}
+| {{ row.captured_at.isoformat() }} | {% if row.kind == "changed" %}🟠{% elif row.kind == "failed" %}🔴{% endif %} | {% if row.kind == "initial" %}최초 상태{% for state in row.initial_states %}<br>`{{ state.path | markdown_table_cell }}` = {{ state | timeline_field_state | markdown_table_cell }}{% endfor %}{% elif row.kind == "unchanged" %}변화 없음{% elif row.kind == "changed" %}{% for change in row.changes %}`{{ change.path | markdown_table_cell }}`: {{ change.previous | timeline_field_state | markdown_table_cell }} → {{ change.current | timeline_field_state | markdown_table_cell }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}{% for failure in row.failures %}`{{ failure.path | markdown_table_cell }}`: {{ failure.error_message | markdown_table_cell }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% endif %} | {{ row.raw_file_path | markdown_table_cell }} |
+{% endfor %}
+
+## EventObservation 해석 실패
+
+{% if analysis.resolution_failures -%}
+| Observation 파일 경로 | 오류 |
+| --- | --- |
+{% for failure in analysis.resolution_failures -%}
+| {{ failure.observation_file_path | markdown_table_cell }} | {{ failure.error_message | markdown_table_cell }} |
+{% endfor -%}
+{% else -%}
+해석에 실패한 EventObservation 파일이 없습니다.
+{% endif -%}

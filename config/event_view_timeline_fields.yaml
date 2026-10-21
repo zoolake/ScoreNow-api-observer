@@ -1,0 +1,13 @@
+# 각 종목의 타임라인에서 함께 관찰할 필드를 표시 순서대로 정의합니다.
+# 중첩 객체 경로는 분석 시 하위 단일 값 경로로 펼칩니다.
+sports:
+  football:
+    - $.time_status
+    - $.timer
+    - $.scores
+    - $.extra
+
+  baseball:
+    - $.time_status
+    - $.scores
+    - $.extra
