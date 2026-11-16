@@ -83,6 +83,25 @@ class UpcomingCandidateSelection:
     duplicate_event_ids: list[str]
 
 
+def candidate_target_dates(
+    *,
+    now: datetime,
+    within_minutes: int,
+) -> tuple[date, ...]:
+    """후보 시간 범위가 걸치는 UTC target_date만 반환합니다."""
+
+    if within_minutes < 1:
+        raise ValueError("후보 조회 시간 범위는 1분 이상이어야 합니다.")
+
+    normalized_now = _as_utc(now, field_name="후보 조회 기준 시각")
+    window_end = normalized_now + timedelta(minutes=within_minutes)
+    day_count = (window_end.date() - normalized_now.date()).days
+    return tuple(
+        normalized_now.date() + timedelta(days=day_offset)
+        for day_offset in range(day_count + 1)
+    )
+
+
 def resolve_latest_league_discoveries(
     file_paths: Iterable[Path],
 ) -> LatestLeagueDiscoveries:

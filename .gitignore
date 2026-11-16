@@ -35,4 +35,10 @@ data/discoveries/*
 data/exceptions/*
 !data/exceptions/.gitkeep
 
+data/state/*
+!data/state/.gitkeep
+
+data/metrics/*
+!data/metrics/.gitkeep
+
 .DS_Store

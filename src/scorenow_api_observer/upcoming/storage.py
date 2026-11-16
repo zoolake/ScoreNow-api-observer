@@ -1,4 +1,5 @@
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -101,14 +102,23 @@ def save_upcoming_discovery_run(
 
 def find_league_upcoming_discovery_paths(
     base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
+    *,
+    target_dates: Iterable[date] | None = None,
 ) -> list[Path]:
-    """저장된 리그별 Discovery 파일 경로를 일정한 순서로 반환합니다."""
+    """지정한 UTC target_date의 리그별 Discovery 경로를 반환합니다."""
 
+    date_directories = (
+        [
+            base_directory / target_date.isoformat()
+            for target_date in sorted(set(target_dates))
+        ]
+        if target_dates is not None
+        else [path for path in base_directory.glob("*") if path.is_dir()]
+    )
     return sorted(
         path
-        for path in base_directory.glob(
-            "*/leagues/*/*/*_discovery.json",
-        )
+        for date_directory in date_directories
+        for path in date_directory.glob("leagues/*/*/*_discovery.json")
         if path.is_file()
     )
 

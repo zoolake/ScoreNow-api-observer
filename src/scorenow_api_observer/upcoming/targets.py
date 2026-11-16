@@ -48,6 +48,7 @@ class UpcomingLeagueTargetConfig(BaseModel):
 
     league_id: NonEmptyString
     label: SafeLabel
+    auto_watch_enabled: bool = False
 
 
 class UpcomingSportTargetConfig(BaseModel):
@@ -105,6 +106,7 @@ class UpcomingTarget:
     sport_code: str
     league_id: str
     league_label: str
+    auto_watch_enabled: bool = False
 
 
 def load_upcoming_targets(
@@ -150,6 +152,7 @@ def load_upcoming_targets(
             sport_code=sport_codes_by_id[sport_target.sport_id],
             league_id=league_target.league_id,
             league_label=league_target.label,
+            auto_watch_enabled=league_target.auto_watch_enabled,
         )
         for sport_target in config.targets
         for league_target in sport_target.leagues
@@ -181,3 +184,9 @@ def select_upcoming_targets(
         )
 
     return [target for target in targets if target.league_label in selected_labels]
+
+
+def select_auto_watch_targets(targets: list[UpcomingTarget]) -> list[UpcomingTarget]:
+    """설정에서 auto-watch가 사용하도록 활성화한 대상만 반환합니다."""
+
+    return [target for target in targets if target.auto_watch_enabled]

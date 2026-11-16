@@ -6,6 +6,7 @@ import pytest
 
 from scorenow_api_observer.event_view import collector
 from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
+from scorenow_api_observer.event_view.request_log import EventViewApiRequestRecord
 from scorenow_api_observer.event_view.response import EventViewResponseIssue
 
 
@@ -26,6 +27,7 @@ def _capture_with_response(
     tmp_path: Path,
     response: httpx.Response,
     requested_event_ids: list[str] | None = None,
+    sport_codes_by_event_id: dict[str, str] | None = None,
     observation_save_errors: dict[str, OSError] | None = None,
 ) -> tuple[
     collector.CaptureResult,
@@ -66,6 +68,8 @@ def _capture_with_response(
         base_url="https://example.test",
         token="test-token",
         requested_event_ids=requested_event_ids,
+        sport_codes_by_event_id=sport_codes_by_event_id,
+        request_log_base_directory=tmp_path / "requests",
     )
 
     return result, saved_metadata, saved_observations
@@ -87,6 +91,9 @@ def test_capture_event_view_analyzes_json_response(
     )
 
     assert result.metadata.response_analysis_status == "completed"
+    assert result.api_request_record is not None
+    assert result.api_request_record.outcome == "completed"
+    assert result.api_request_record.request_category == "unknown"
     assert result.metadata.requested_event_ids == ["A"]
     assert result.metadata.returned_event_ids == ["A", "C"]
     assert result.metadata.response_issues == [
@@ -122,10 +129,13 @@ def test_capture_event_view_handles_multiple_requested_event_ids(
         tmp_path=tmp_path,
         response=response,
         requested_event_ids=["A", "B"],
+        sport_codes_by_event_id={"A": "football", "B": "baseball"},
     )
 
     assert result.metadata.requested_event_ids == ["A", "B"]
     assert result.metadata.returned_event_ids == ["A", "B"]
+    assert result.api_request_record is not None
+    assert result.api_request_record.request_category == "mixed"
     assert saved_metadata == [result.metadata]
     assert saved_observations == result.event_observations
 
@@ -217,3 +227,56 @@ def test_capture_event_view_saves_metadata_when_response_shape_is_invalid(
     assert saved_metadata == [result.metadata]
     assert saved_observations == []
     assert result.event_observations == []
+
+
+def test_capture_event_view_records_request_error_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = httpx.Request("GET", "https://example.test/v1/event/view")
+
+    def fail_request(**_kwargs):
+        raise httpx.ConnectError("offline", request=request)
+
+    monkeypatch.setattr(collector, "get_event_view", fail_request)
+
+    with pytest.raises(httpx.ConnectError):
+        collector.capture_event_view(
+            base_url="https://example.test",
+            token="secret-token",
+            requested_event_ids=["A"],
+            request_log_base_directory=tmp_path,
+        )
+
+    record_path = next(tmp_path.rglob("*.json"))
+    record_text = record_path.read_text(encoding="utf-8")
+    record = EventViewApiRequestRecord.model_validate_json(record_text)
+    assert record.outcome == "request_error"
+    assert record.error_type == "ConnectError"
+    assert "secret-token" not in record_text
+
+
+def test_capture_event_view_does_not_call_api_when_request_log_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "start_event_view_api_request",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(
+        collector,
+        "get_event_view",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("호출 기록 없이 API를 호출하면 안 됩니다.")
+        ),
+    )
+
+    with pytest.raises(collector.EventViewRequestLogStartError, match="disk full"):
+        collector.capture_event_view(
+            base_url="https://example.test",
+            token="secret-token",
+            requested_event_ids=["A"],
+            request_log_base_directory=tmp_path,
+        )

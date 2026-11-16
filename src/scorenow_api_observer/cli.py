@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -9,6 +9,31 @@ import typer
 from jinja2 import TemplateError
 from pydantic import ValidationError
 
+from scorenow_api_observer.auto_watch.config import (
+    AUTO_WATCH_CONFIG_PATH,
+    AutoWatchConfig,
+    InvalidAutoWatchConfigError,
+    load_auto_watch_config,
+)
+from scorenow_api_observer.auto_watch.exceptions import (
+    build_auto_watch_exception_record,
+    save_auto_watch_exception_record,
+)
+from scorenow_api_observer.auto_watch.models import AutoWatchState
+from scorenow_api_observer.auto_watch.policy import (
+    AutoWatchStatusUpdate,
+    apply_auto_watch_time_status,
+    find_due_auto_watch_events,
+)
+from scorenow_api_observer.auto_watch.state import (
+    AUTO_WATCH_STATE_PATH,
+    add_auto_watch_candidates,
+    load_auto_watch_state,
+    mark_auto_watch_stop_decisions,
+    new_auto_watch_state,
+    remove_auto_watch_events,
+    save_auto_watch_state,
+)
 from scorenow_api_observer.event_odds.collector import (
     DEFAULT_ODDS_MARKETS,
     OddsCollectionResult,
@@ -20,6 +45,7 @@ from scorenow_api_observer.event_odds.request import (
 )
 from scorenow_api_observer.event_view.collector import (
     CaptureResult,
+    EventViewRequestLogStartError,
     capture_event_view,
 )
 from scorenow_api_observer.event_view.comparison import (
@@ -38,6 +64,11 @@ from scorenow_api_observer.event_view.request import (
     InvalidRequestedEventIdsError,
     build_event_view_request_batches,
     parse_requested_event_ids,
+)
+from scorenow_api_observer.event_view.request_log import (
+    RequestCategory,
+    RequestedEvent,
+    classify_request_category,
 )
 from scorenow_api_observer.event_view.storage import (
     find_capture_metadata_paths,
@@ -86,6 +117,7 @@ from scorenow_api_observer.upcoming.candidates import (
     InvalidUpcomingCandidateFilterError,
     LatestLeagueDiscoveries,
     UpcomingCandidate,
+    candidate_target_dates,
     normalize_candidate_sport_code,
     parse_candidate_league_labels,
     resolve_latest_league_discoveries,
@@ -98,6 +130,7 @@ from scorenow_api_observer.upcoming.storage import (
 from scorenow_api_observer.upcoming.targets import (
     InvalidUpcomingTargetSelectionError,
     load_upcoming_targets,
+    select_auto_watch_targets,
     select_upcoming_targets,
 )
 
@@ -107,6 +140,13 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 KST = ZoneInfo("Asia/Seoul")
+NON_RETRYABLE_AUTO_WATCH_STATUS_CODES = frozenset({401, 402, 403, 429})
+AUTO_WATCH_REQUEST_CATEGORIES: tuple[RequestCategory, ...] = (
+    "football_only",
+    "baseball_only",
+    "mixed",
+    "unknown",
+)
 
 
 @app.callback()
@@ -403,22 +443,32 @@ def upcoming_candidates(
         typer.echo(f"후보 조회 필터가 올바르지 않습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
+    now = _utc_now()
     try:
-        discovery_paths = find_league_upcoming_discovery_paths()
+        target_dates = candidate_target_dates(
+            now=now,
+            within_minutes=within_minutes,
+        )
+        discovery_paths = find_league_upcoming_discovery_paths(
+            target_dates=target_dates
+        )
         latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         typer.echo(f"Discovery 파일 탐색에 실패했습니다. {error}", err=True)
         raise typer.Exit(code=1) from None
 
     _print_upcoming_discovery_warnings(latest_discoveries)
 
-    typer.echo(f"저장된 리그 Discovery: {len(discovery_paths)}개")
+    typer.echo(
+        "확인 UTC 날짜: "
+        + ", ".join(target_date.isoformat() for target_date in target_dates)
+    )
+    typer.echo(f"확인한 리그 Discovery 파일: {len(discovery_paths)}개")
     typer.echo(f"사용 가능한 최신 Discovery: {len(latest_discoveries.selected)}개")
     if not latest_discoveries.selected:
         typer.echo("사용 가능한 리그 Discovery가 없습니다.", err=True)
         raise typer.Exit(code=1)
 
-    now = _utc_now()
     try:
         selection = select_upcoming_candidates(
             latest_discoveries.selected,
@@ -489,22 +539,32 @@ def watch_upcoming(
         typer.echo(f"후보 조회 필터가 올바르지 않습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
+    now = _utc_now()
     try:
-        discovery_paths = find_league_upcoming_discovery_paths()
+        target_dates = candidate_target_dates(
+            now=now,
+            within_minutes=within_minutes,
+        )
+        discovery_paths = find_league_upcoming_discovery_paths(
+            target_dates=target_dates
+        )
         latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         typer.echo(f"Discovery 파일 탐색에 실패했습니다. {error}", err=True)
         raise typer.Exit(code=1) from None
 
     _print_upcoming_discovery_warnings(latest_discoveries)
 
-    typer.echo(f"저장된 리그 Discovery: {len(discovery_paths)}개")
+    typer.echo(
+        "확인 UTC 날짜: "
+        + ", ".join(target_date.isoformat() for target_date in target_dates)
+    )
+    typer.echo(f"확인한 리그 Discovery 파일: {len(discovery_paths)}개")
     typer.echo(f"사용 가능한 최신 Discovery: {len(latest_discoveries.selected)}개")
     if not latest_discoveries.selected:
         typer.echo("사용 가능한 리그 Discovery가 없습니다.", err=True)
         raise typer.Exit(code=1)
 
-    now = _utc_now()
     try:
         selection = select_upcoming_candidates(
             latest_discoveries.selected,
@@ -560,7 +620,99 @@ def watch_upcoming(
         event_ids=event_ids,
         interval_seconds=interval_seconds,
         max_cycles=max_cycles,
+        sport_codes_by_event_id={
+            candidate.event.event_id: candidate.event.sport_code
+            for candidate in selection.candidates
+        },
     )
+
+
+@app.command("auto-watch")
+def auto_watch(
+    within_minutes: int = typer.Option(
+        10,
+        "--within-minutes",
+        min=1,
+        help="현재부터 자동 수집 대상으로 추가할 시작 예정 범위(분)",
+    ),
+    interval_seconds: int = typer.Option(
+        30,
+        "--interval",
+        "-i",
+        min=1,
+        help="활성 이벤트의 Event View 수집 주기(초)",
+    ),
+    candidate_check_interval_seconds: int = typer.Option(
+        300,
+        "--candidate-check-interval",
+        min=1,
+        help="저장된 Upcoming Discovery에서 새 후보를 다시 확인할 간격(초)",
+    ),
+    max_cycles: int | None = typer.Option(
+        None,
+        "--max-cycles",
+        "-c",
+        min=1,
+        help="최대 자동 처리 주기. 생략하면 Ctrl+C 또는 중단 오류까지 계속 실행",
+    ),
+) -> None:
+    """활성화된 리그의 저장된 Upcoming 후보를 지속적으로 자동 수집합니다."""
+
+    try:
+        configured_targets = load_upcoming_targets()
+        enabled_targets = select_auto_watch_targets(configured_targets)
+    except (OSError, ValueError) as error:
+        typer.echo(f"Upcoming 조회 대상 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    if not enabled_targets:
+        typer.echo("auto-watch가 활성화된 리그가 없습니다.", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        auto_watch_config = load_auto_watch_config()
+    except (OSError, InvalidAutoWatchConfigError) as error:
+        typer.echo(f"Auto-watch 상태 정책 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        settings = Settings()  # pyright: ignore[reportCallIssue]
+    except ValidationError as error:
+        typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    now = _utc_now()
+    try:
+        state = load_auto_watch_state()
+        if state is None:
+            state = new_auto_watch_state(now=now)
+            save_auto_watch_state(state)
+    except (OSError, ValueError, ValidationError) as error:
+        typer.echo(
+            f"auto-watch 상태 파일을 읽거나 만들지 못했습니다. {error}", err=True
+        )
+        raise typer.Exit(code=1) from None
+
+    _print_auto_watch_start_summary(
+        enabled_target_count=len(enabled_targets),
+        active_event_count=len(state.active_events),
+        within_minutes=within_minutes,
+        interval_seconds=interval_seconds,
+        candidate_check_interval_seconds=candidate_check_interval_seconds,
+        max_cycles=max_cycles,
+    )
+
+    completed = _run_auto_watch(
+        settings=settings,
+        state=state,
+        within_minutes=within_minutes,
+        interval_seconds=interval_seconds,
+        candidate_check_interval_seconds=candidate_check_interval_seconds,
+        max_cycles=max_cycles,
+        auto_watch_config=auto_watch_config,
+    )
+    if not completed:
+        raise typer.Exit(code=1)
 
 
 @app.command("collect-upcoming-odds")
@@ -591,22 +743,32 @@ def collect_upcoming_odds(
         typer.echo(f"후보 조회 필터가 올바르지 않습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
+    now = _utc_now()
     try:
-        discovery_paths = find_league_upcoming_discovery_paths()
+        target_dates = candidate_target_dates(
+            now=now,
+            within_minutes=within_minutes,
+        )
+        discovery_paths = find_league_upcoming_discovery_paths(
+            target_dates=target_dates
+        )
         latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         typer.echo(f"Discovery 파일 탐색에 실패했습니다. {error}", err=True)
         raise typer.Exit(code=1) from None
 
     _print_upcoming_discovery_warnings(latest_discoveries)
 
-    typer.echo(f"저장된 리그 Discovery: {len(discovery_paths)}개")
+    typer.echo(
+        "확인 UTC 날짜: "
+        + ", ".join(target_date.isoformat() for target_date in target_dates)
+    )
+    typer.echo(f"확인한 리그 Discovery 파일: {len(discovery_paths)}개")
     typer.echo(f"사용 가능한 최신 Discovery: {len(latest_discoveries.selected)}개")
     if not latest_discoveries.selected:
         typer.echo("사용 가능한 리그 Discovery가 없습니다.", err=True)
         raise typer.Exit(code=1)
 
-    now = _utc_now()
     try:
         selection = select_upcoming_candidates(
             latest_discoveries.selected,
@@ -1004,12 +1166,479 @@ def inspect_timeline(
         )
 
 
+def _print_auto_watch_start_summary(
+    *,
+    enabled_target_count: int,
+    active_event_count: int,
+    within_minutes: int,
+    interval_seconds: int,
+    candidate_check_interval_seconds: int,
+    max_cycles: int | None,
+) -> None:
+    """Auto-watch 시작 설정과 주요 동작을 항목별 여러 줄로 출력합니다."""
+
+    max_cycles_description = str(max_cycles) if max_cycles is not None else "제한 없음"
+    typer.echo("🤖 Auto-watch를 시작합니다.")
+    typer.echo("")
+    typer.echo("[실행 설정]")
+    typer.echo(f"  • 수집 대상 리그: {enabled_target_count}개")
+    typer.echo(f"  • 복구된 활성 경기: {active_event_count}개")
+    typer.echo(f"  • 신규 경기 탐색 범위: 지금부터 {within_minutes}분 이내")
+    typer.echo(f"  • Event View 수집 간격: {interval_seconds}초")
+    typer.echo(f"  • 새 후보 확인 간격: {candidate_check_interval_seconds}초")
+    typer.echo(f"  • 실행 횟수 제한: {max_cycles_description}")
+    typer.echo("")
+    typer.echo("[저장 파일]")
+    typer.echo(f"  • 상태 파일: {AUTO_WATCH_STATE_PATH}")
+    typer.echo(f"  • 상태 정책: {AUTO_WATCH_CONFIG_PATH}")
+    typer.echo("")
+    typer.echo("ℹ️ Upcoming API는 호출하지 않고 저장된 Discovery만 확인합니다.")
+    typer.echo(
+        "⏱️ 종료 상태(time_status=3)를 감지하면 15분 더 수집합니다. "
+        "다른 상태는 정책 파일에 설정된 제한 시간까지만 수집합니다."
+    )
+    typer.echo("⛔ 실행을 중단하려면 Ctrl+C를 누르세요.")
+
+
+def _run_auto_watch(
+    *,
+    settings: Settings,
+    state: AutoWatchState,
+    within_minutes: int,
+    interval_seconds: int,
+    candidate_check_interval_seconds: int,
+    max_cycles: int | None,
+    auto_watch_config: AutoWatchConfig,
+) -> bool:
+    """Discovery 재확인, 상태 복구, Event View 수집을 한 루프로 조합합니다."""
+
+    cycle_count = 0
+    saved_count = 0
+    completed_event_count = 0
+    exception_event_count = 0
+    request_counts: dict[RequestCategory, int] = {
+        category: 0 for category in AUTO_WATCH_REQUEST_CATEGORIES
+    }
+    next_candidate_check_at: datetime | None = None
+    stopped_by_user = False
+    stop_reason: str | None = None
+
+    try:
+        while max_cycles is None or cycle_count < max_cycles:
+            cycle_count += 1
+            now = _utc_now()
+
+            if next_candidate_check_at is None or now >= next_candidate_check_at:
+                try:
+                    added_event_ids = _refresh_auto_watch_candidates(
+                        state=state,
+                        now=now,
+                        within_minutes=within_minutes,
+                    )
+                except (OSError, ValueError, ValidationError) as error:
+                    typer.echo(
+                        f"자동 수집 후보를 확인하지 못했습니다. {error}", err=True
+                    )
+                    stop_reason = "후보 확인 실패"
+                    break
+
+                next_candidate_check_at = now + timedelta(
+                    seconds=candidate_check_interval_seconds
+                )
+                if added_event_ids:
+                    try:
+                        state_file_path = save_auto_watch_state(state)
+                    except OSError as error:
+                        typer.echo(
+                            f"auto-watch 상태를 저장하지 못했습니다. {error}",
+                            err=True,
+                        )
+                        stop_reason = "상태 저장 실패"
+                        break
+                    typer.echo(
+                        "➕ 활성 목록에 추가한 경기 ID: " + ", ".join(added_event_ids)
+                    )
+                    typer.echo(f"💾 상태 저장 위치: {state_file_path}")
+
+            (
+                stopped_event_ids,
+                stopped_exception_count,
+                stop_processing_succeeded,
+            ) = _process_due_auto_watch_events(
+                state=state,
+                now=now,
+                auto_watch_config=auto_watch_config,
+            )
+            completed_event_count += len(stopped_event_ids)
+            exception_event_count += stopped_exception_count
+            if not stop_processing_succeeded:
+                stop_reason = "상태 저장 실패"
+                break
+
+            active_events_by_id = {
+                event.event_id: event
+                for event in state.active_events
+                if event.stop_decided_at is None
+            }
+            if active_events_by_id:
+                request_batches = build_event_view_request_batches(
+                    list(active_events_by_id)
+                )
+                typer.echo("")
+                typer.echo(
+                    f"[🤖 자동 처리 {cycle_count}번째 주기 / "
+                    f"활성 이벤트 {len(state.active_events)}개]"
+                )
+
+                for batch_index, requested_event_ids in enumerate(
+                    request_batches,
+                    start=1,
+                ):
+                    typer.echo(
+                        f"배치 {batch_index}/{len(request_batches)}: "
+                        + ", ".join(requested_event_ids)
+                    )
+                    requested_events = [
+                        RequestedEvent(
+                            event_id=event_id,
+                            sport_code=active_events_by_id[event_id].sport_code,
+                        )
+                        for event_id in requested_event_ids
+                    ]
+                    result, should_stop, request_category = _capture_auto_watch_batch(
+                        settings=settings,
+                        requested_event_ids=requested_event_ids,
+                        requested_events=requested_events,
+                    )
+                    if request_category is not None:
+                        request_counts[request_category] += 1
+                    if result is not None:
+                        saved_count += 1
+                        if _update_auto_watch_states(
+                            state=state,
+                            result=result,
+                            auto_watch_config=auto_watch_config,
+                        ):
+                            try:
+                                save_auto_watch_state(state)
+                            except OSError as error:
+                                typer.echo(
+                                    f"auto-watch 상태를 저장하지 못했습니다. {error}",
+                                    err=True,
+                                )
+                                should_stop = True
+
+                    if should_stop:
+                        stop_reason = "자동 재시도 금지 또는 로컬 저장 실패"
+                        break
+
+                if stop_reason is not None:
+                    break
+            elif state.active_events:
+                typer.echo(
+                    f"[🤖 자동 처리 {cycle_count}번째 주기] 예외 기록 저장을 "
+                    f"재시도할 이벤트 {len(state.active_events)}개가 있습니다."
+                )
+            else:
+                typer.echo(
+                    f"[🤖 자동 처리 {cycle_count}번째 주기] "
+                    "현재 활성 이벤트가 없습니다."
+                )
+
+            if max_cycles is not None and cycle_count >= max_cycles:
+                break
+            time.sleep(interval_seconds)
+    except KeyboardInterrupt:
+        stopped_by_user = True
+        typer.echo("")
+        typer.echo("auto-watch를 사용자가 중단했습니다.")
+
+    _print_auto_watch_summary(
+        cycle_count=cycle_count,
+        saved_count=saved_count,
+        completed_event_count=completed_event_count,
+        exception_event_count=exception_event_count,
+        active_event_count=len(state.active_events),
+        request_counts=request_counts,
+    )
+    if stop_reason is not None:
+        typer.echo(f"auto-watch 중단 사유: {stop_reason}", err=True)
+        return False
+    return stopped_by_user or max_cycles is not None
+
+
+def _process_due_auto_watch_events(
+    *,
+    state: AutoWatchState,
+    now: datetime,
+    auto_watch_config: AutoWatchConfig,
+) -> tuple[list[str], int, bool]:
+    """중단 결정을 고정하고 예외 저장에 성공한 이벤트만 활성 목록에서 제거합니다."""
+
+    stop_candidates = find_due_auto_watch_events(
+        state=state,
+        now=now,
+        config=auto_watch_config,
+    )
+    if not stop_candidates:
+        return [], 0, True
+
+    if mark_auto_watch_stop_decisions(
+        state=state,
+        event_ids=[candidate.event_id for candidate in stop_candidates],
+        stopped_at=now,
+    ):
+        try:
+            save_auto_watch_state(state)
+        except OSError as error:
+            typer.echo(
+                f"auto-watch 중단 결정을 상태 파일에 저장하지 못했습니다. {error}",
+                err=True,
+            )
+            return [], 0, False
+
+    active_events_by_id = {event.event_id: event for event in state.active_events}
+    removable_event_ids: list[str] = []
+    exception_event_count = 0
+
+    for candidate in stop_candidates:
+        event = active_events_by_id.get(candidate.event_id)
+        if event is None:
+            continue
+
+        stopped_at = event.stop_decided_at or candidate.stopped_at
+        if candidate.requires_exception_record:
+            try:
+                record = build_auto_watch_exception_record(
+                    event=event,
+                    stopped_at=stopped_at,
+                )
+                exception_path = save_auto_watch_exception_record(record)
+            except (OSError, ValueError) as error:
+                typer.echo(
+                    f"경기 ID {event.event_id}: Auto-watch 예외 기록을 저장하지 "
+                    f"못해 활성 목록에 유지합니다. {error}",
+                    err=True,
+                )
+                continue
+
+            exception_event_count += 1
+            typer.echo(
+                f"경기 ID {event.event_id}: time_status="
+                f"{_format_time_status(candidate.stop_time_status)} 상태로 관찰 상한에 "
+                f"도달해 예외 기록을 저장했습니다: {exception_path}"
+            )
+        else:
+            typer.echo(
+                f"경기 ID {event.event_id}: time_status=3 감지 후 "
+                f"{auto_watch_config.ended.followup_minutes}분 추가 수집을 "
+                "완료했습니다."
+            )
+
+        removable_event_ids.append(event.event_id)
+
+    if not removable_event_ids:
+        return [], 0, True
+
+    remove_auto_watch_events(
+        state=state,
+        event_ids=removable_event_ids,
+        now=now,
+    )
+    try:
+        save_auto_watch_state(state)
+    except OSError as error:
+        typer.echo(
+            f"완료 이벤트를 제거한 auto-watch 상태를 저장하지 못했습니다. {error}",
+            err=True,
+        )
+        return removable_event_ids, exception_event_count, False
+    return removable_event_ids, exception_event_count, True
+
+
+def _refresh_auto_watch_candidates(
+    *,
+    state: AutoWatchState,
+    now: datetime,
+    within_minutes: int,
+) -> list[str]:
+    """현재 설정과 최신 Discovery를 다시 읽어 새 자동 수집 후보를 추가합니다."""
+
+    configured_targets = load_upcoming_targets()
+    enabled_targets = select_auto_watch_targets(configured_targets)
+    if not enabled_targets:
+        raise ValueError("auto-watch가 활성화된 리그가 없습니다.")
+
+    enabled_league_labels = frozenset(target.league_label for target in enabled_targets)
+    target_dates = candidate_target_dates(
+        now=now,
+        within_minutes=within_minutes,
+    )
+    discovery_paths = find_league_upcoming_discovery_paths(target_dates=target_dates)
+    latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
+    _print_upcoming_discovery_warnings(latest_discoveries)
+
+    if not latest_discoveries.selected:
+        _print_auto_watch_candidate_summary(
+            target_dates=target_dates,
+            discovery_file_count=len(discovery_paths),
+            selected_discovery_count=0,
+            candidate_count=0,
+            added_event_count=0,
+            within_minutes=within_minutes,
+        )
+        return []
+
+    selection = select_upcoming_candidates(
+        latest_discoveries.selected,
+        now=now,
+        within_minutes=within_minutes,
+        league_labels=enabled_league_labels,
+    )
+    if selection.duplicate_event_ids:
+        typer.echo(
+            "중복된 이벤트 ID는 최신 Discovery의 값으로 한 번만 사용합니다: "
+            + ", ".join(selection.duplicate_event_ids),
+            err=True,
+        )
+
+    added_event_ids = add_auto_watch_candidates(
+        state=state,
+        candidates=selection.candidates,
+        now=now,
+    )
+    _print_auto_watch_candidate_summary(
+        target_dates=target_dates,
+        discovery_file_count=len(discovery_paths),
+        selected_discovery_count=len(latest_discoveries.selected),
+        candidate_count=len(selection.candidates),
+        added_event_count=len(added_event_ids),
+        within_minutes=within_minutes,
+    )
+    return added_event_ids
+
+
+def _print_auto_watch_candidate_summary(
+    *,
+    target_dates: tuple[date, ...],
+    discovery_file_count: int,
+    selected_discovery_count: int,
+    candidate_count: int,
+    added_event_count: int,
+    within_minutes: int,
+) -> None:
+    """Auto-watch 후보 확인 결과를 항목별 여러 줄로 출력합니다."""
+
+    target_date_text = ", ".join(
+        target_date.isoformat() for target_date in target_dates
+    )
+    typer.echo("")
+    typer.echo(f"🔎 후보 확인 완료 — 대상 UTC 날짜: {target_date_text}")
+    typer.echo(f"  • 확인한 Discovery 파일: {discovery_file_count}개")
+    typer.echo(f"  • 실제 사용한 최신 Discovery: {selected_discovery_count}개")
+    typer.echo(f"  • {within_minutes}분 안에 시작할 경기: {candidate_count}개")
+    typer.echo(f"  • 새로 추가한 경기: {added_event_count}개")
+
+
+def _capture_auto_watch_batch(
+    *,
+    settings: Settings,
+    requested_event_ids: list[str],
+    requested_events: list[RequestedEvent],
+) -> tuple[CaptureResult | None, bool, RequestCategory | None]:
+    """호출 기록을 먼저 남기고 auto-watch Event View 배치 하나를 수집합니다."""
+
+    request_category = classify_request_category(requested_events)
+    try:
+        result = capture_event_view(
+            base_url=settings.bets_api_base_url,
+            token=settings.bets_api_token.get_secret_value(),
+            requested_event_ids=requested_event_ids,
+            sport_codes_by_event_id={
+                event.event_id: event.sport_code
+                for event in requested_events
+                if event.sport_code is not None
+            },
+        )
+    except EventViewRequestLogStartError as error:
+        typer.echo(
+            f"API 호출 기록을 시작하지 못해 유료 API를 호출하지 않습니다. {error}",
+            err=True,
+        )
+        return None, True, None
+    except httpx.RequestError:
+        typer.echo(
+            "API 서버에 연결하지 못했습니다. 다음 수집 주기에 다시 시도합니다.",
+            err=True,
+        )
+        return None, False, request_category
+    except OSError as error:
+        typer.echo(
+            f"Capture 저장에 실패해 추가 유료 호출을 중단합니다. {error}",
+            err=True,
+        )
+        return None, True, request_category
+
+    _print_capture_summary(result)
+    _print_observation_save_failures(result)
+
+    if result.response.status_code in NON_RETRYABLE_AUTO_WATCH_STATUS_CODES:
+        typer.echo(
+            f"HTTP {result.response.status_code} 응답은 자동 재시도하지 않습니다. "
+            "인증·결제·권한·호출 제한 상태를 확인한 뒤 다시 실행하세요.",
+            err=True,
+        )
+        return result, True, request_category
+
+    if result.response.is_error:
+        typer.echo(
+            f"HTTP {result.response.status_code} 오류입니다. "
+            "즉시 연속 재시도하지 않고 다음 수집 주기에 다시 시도합니다.",
+            err=True,
+        )
+        return result, False, request_category
+
+    for observation in result.event_observations:
+        _compare_and_save_structure_change(observation)
+    return result, False, request_category
+
+
+def _print_auto_watch_summary(
+    *,
+    cycle_count: int,
+    saved_count: int,
+    completed_event_count: int,
+    exception_event_count: int,
+    active_event_count: int,
+    request_counts: dict[RequestCategory, int],
+) -> None:
+    """auto-watch 세션의 처리 결과와 종목 조합별 실제 호출 횟수를 출력합니다."""
+
+    total_request_count = sum(request_counts.values())
+    typer.echo("")
+    typer.echo(
+        "auto-watch 요약: "
+        f"처리 주기 {cycle_count}회 / API 호출 {total_request_count}회 / "
+        f"Capture 저장 {saved_count}개 / 제거 이벤트 {completed_event_count}개 / "
+        f"예외 기록 {exception_event_count}개 / "
+        f"활성 이벤트 {active_event_count}개"
+    )
+    typer.echo(
+        "호출 분류: "
+        f"축구 전용 {request_counts['football_only']}회 / "
+        f"야구 전용 {request_counts['baseball_only']}회 / "
+        f"혼합 {request_counts['mixed']}회 / "
+        f"분류 불가 {request_counts['unknown']}회"
+    )
+
+
 def _run_event_view_watch(
     *,
     settings: Settings,
     event_ids: list[str],
     interval_seconds: int,
     max_cycles: int | None,
+    sport_codes_by_event_id: dict[str, str] | None = None,
 ) -> None:
     """이벤트별 종료 상태를 관리하며 Event View를 동적 배치로 반복 수집합니다."""
 
@@ -1061,6 +1690,15 @@ def _run_event_view_watch(
                 result = _capture_event_view_watch_batch(
                     settings=settings,
                     requested_event_ids=requested_event_ids,
+                    sport_codes_by_event_id=(
+                        {
+                            event_id: sport_codes_by_event_id[event_id]
+                            for event_id in requested_event_ids
+                            if event_id in sport_codes_by_event_id
+                        }
+                        if sport_codes_by_event_id is not None
+                        else None
+                    ),
                 )
                 if result is None:
                     continue
@@ -1098,15 +1736,24 @@ def _capture_event_view_watch_batch(
     *,
     settings: Settings,
     requested_event_ids: list[str],
+    sport_codes_by_event_id: dict[str, str] | None = None,
 ) -> CaptureResult | None:
     """Event View 배치 하나를 수집·비교하고 성공한 Capture를 반환합니다."""
 
     try:
-        result = capture_event_view(
-            base_url=settings.bets_api_base_url,
-            token=settings.bets_api_token.get_secret_value(),
-            requested_event_ids=requested_event_ids,
-        )
+        if sport_codes_by_event_id is None:
+            result = capture_event_view(
+                base_url=settings.bets_api_base_url,
+                token=settings.bets_api_token.get_secret_value(),
+                requested_event_ids=requested_event_ids,
+            )
+        else:
+            result = capture_event_view(
+                base_url=settings.bets_api_base_url,
+                token=settings.bets_api_token.get_secret_value(),
+                requested_event_ids=requested_event_ids,
+                sport_codes_by_event_id=sport_codes_by_event_id,
+            )
     except httpx.RequestError:
         typer.echo("API 서버에 연결하지 못했습니다.", err=True)
         return None
@@ -1125,6 +1772,112 @@ def _capture_event_view_watch_batch(
         _compare_and_save_structure_change(observation)
 
     return result
+
+
+def _update_auto_watch_states(
+    *,
+    state: AutoWatchState,
+    result: CaptureResult,
+    auto_watch_config: AutoWatchConfig,
+) -> bool:
+    """성공한 Capture의 상태값과 출처를 Auto-watch 상태에 반영합니다."""
+
+    if result.response.is_error:
+        return False
+    if result.metadata.response_analysis_status != "completed":
+        return False
+
+    try:
+        response_json = result.response.json()
+    except ValueError:
+        return False
+
+    active_events_by_id = {
+        event.event_id: event
+        for event in state.active_events
+        if event.stop_decided_at is None
+    }
+    observed_event_ids: set[str] = set()
+    changed = False
+
+    for observation in result.event_observations:
+        event = active_events_by_id.get(observation.event_id)
+        if event is None:
+            continue
+        observed_event_ids.add(observation.event_id)
+
+        try:
+            event_data = extract_observed_event(
+                observation=observation,
+                response_json=response_json,
+            )
+        except InvalidEventObservationReferenceError as error:
+            typer.echo(
+                f"경기 ID {observation.event_id}의 Auto-watch 상태를 확인하지 "
+                f"못했습니다. {error}",
+                err=True,
+            )
+            continue
+
+        update = apply_auto_watch_time_status(
+            event=event,
+            time_status=event_data.get("time_status"),
+            observed_at=result.metadata.captured_at,
+            capture_metadata_file_path=observation.capture_metadata_file_path,
+            config=auto_watch_config,
+        )
+        changed = changed or update.changed
+        _print_auto_watch_status_update(update)
+
+    requested_event_ids = getattr(result.metadata, "requested_event_ids", [])
+    for event_id in requested_event_ids:
+        event = active_events_by_id.get(event_id)
+        if event is None or event_id in observed_event_ids:
+            continue
+        update = apply_auto_watch_time_status(
+            event=event,
+            time_status=None,
+            observed_at=result.metadata.captured_at,
+            capture_metadata_file_path=str(result.metadata_file_path),
+            config=auto_watch_config,
+        )
+        changed = changed or update.changed
+        _print_auto_watch_status_update(update)
+
+    if changed:
+        state.updated_at = result.metadata.captured_at.astimezone(UTC)
+    return changed
+
+
+def _print_auto_watch_status_update(update: AutoWatchStatusUpdate) -> None:
+    if not update.mode_changed:
+        return
+
+    time_status = _format_time_status(update.time_status)
+    if update.current_mode == "inplay":
+        typer.echo(
+            f"경기 ID {update.event_id}: time_status=1로 경기 중 상태를 "
+            "확인해 이전 관찰 상한을 해제했습니다."
+        )
+        return
+
+    assert update.deadline is not None
+    if update.current_mode == "ended":
+        typer.echo(
+            f"경기 ID {update.event_id}: time_status=3 종료를 감지했습니다. "
+            f"{update.deadline.isoformat()}까지 추가 수집합니다."
+        )
+        return
+
+    typer.echo(
+        f"경기 ID {update.event_id}: time_status={time_status}을 "
+        f"{update.current_mode} 정책으로 관찰합니다. "
+        f"수집 상한은 {update.deadline.isoformat()}입니다."
+    )
+
+
+def _format_time_status(time_status: int | None) -> str:
+    return str(time_status) if time_status is not None else "unknown"
 
 
 def _update_event_watch_states(

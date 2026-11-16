@@ -17,6 +17,7 @@ CLI
 ├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
 ├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
 ├── watch-upcoming ── 곧 시작할 경기를 자동 선택해 Event View 반복 수집
+├── auto-watch ── Discovery 재확인 + 활성 목록 복구 + 지속 Event View 수집
 ├── collect-upcoming-odds ── 곧 시작할 경기를 자동 선택해 Event Odds 한 번 수집
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── collect-odds      ── 이벤트별 Event Odds API 호출 및 일간 최신 Snapshot 저장
@@ -30,15 +31,18 @@ CLI
 └── 저장 파일 탐색 → 부분 성공 로드 → 이벤트 해석 → 보고서용 집계
 ```
 
-`collect`, `watch`, `watch-upcoming`은 하나의 공통 수집 함수인
-`capture_event_view()`를 사용합니다. 두 watch 명령은 `_run_event_view_watch()`로 반복
-제어, 동적 요청 배치, 이벤트별 종료 상태와 부분 실패 처리를 공유합니다.
+`collect`, `watch`, `watch-upcoming`, `auto-watch`는 하나의 공통 수집 함수인
+`capture_event_view()`를 사용합니다. `watch`와 `watch-upcoming`은
+`_run_event_view_watch()`로 반복 제어와 동적 요청 배치를 공유합니다. `auto-watch`는
+실행 중 후보를 추가하고 재시작 상태를 복구해야 하므로 `_run_auto_watch()`에서 별도
+반복 제어를 하되, 종료 상태 해석은 같은 `event_view.watching` 함수를 사용합니다.
 `collect-odds`와 `collect-upcoming-odds`는 Event Odds가 한 요청에 이벤트 하나만 받는
 제약에 맞춰 `collect_event_odds()`를 공유하고, 이벤트별 호출 결과를 메모리에서
 집계합니다. `compare`와 watch의 구조 비교는 `compare_observations()`로 합쳐집니다.
 `report`는 저장된 자료만 사용하는 오프라인 명령이며 API 설정을 읽지 않습니다.
 기능별 코드는 `event_view`, `upcoming`, `event_odds`, `reporting` 하위 패키지로
-분리되어 있습니다.
+분리되어 있습니다. `auto_watch` 패키지는 활성 목록과 API 요청 기록의 영속 모델·저장을
+담고 있습니다.
 
 ## `discover-upcoming` 호출 트리
 
@@ -84,7 +88,10 @@ Upcoming 원문과 CaptureMetadata는 KST 호출 날짜·파일명을 사용하�
 
 ```text
 cli.upcoming_candidates(within_minutes, sport_code, league_labels)
-├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.candidate_target_dates(...)
+│   └── now부터 now + N분까지 걸치는 UTC 날짜 계산
+├── upcoming.storage.find_league_upcoming_discovery_paths(target_dates=...)
+│   └── 계산한 UTC target_date 디렉터리만 탐색
 ├── upcoming.candidates.resolve_latest_league_discoveries(...)
 │   ├── 파일마다 upcoming.storage.load_league_upcoming_discovery(...)
 │   ├── 읽기·검증 실패를 모으고 나머지 파일 계속 처리
@@ -110,7 +117,8 @@ cli.upcoming_candidates(within_minutes, sport_code, league_labels)
 cli.collect_upcoming_odds(within_minutes, sport_code, league_labels)
 ├── upcoming.candidates.normalize_candidate_sport_code(...)
 ├── upcoming.candidates.parse_candidate_league_labels(...)
-├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.candidate_target_dates(...)
+├── upcoming.storage.find_league_upcoming_discovery_paths(target_dates=...)
 ├── upcoming.candidates.resolve_latest_league_discoveries(...)
 │   └── upcoming-candidates와 같은 최신 결과·fallback 규칙 사용
 ├── upcoming.candidates.select_upcoming_candidates(...)
@@ -134,7 +142,8 @@ cli.collect_upcoming_odds(within_minutes, sport_code, league_labels)
 cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, max_cycles)
 ├── upcoming.candidates.normalize_candidate_sport_code(...)
 ├── upcoming.candidates.parse_candidate_league_labels(...)
-├── upcoming.storage.find_league_upcoming_discovery_paths(...)
+├── upcoming.candidates.candidate_target_dates(...)
+├── upcoming.storage.find_league_upcoming_discovery_paths(target_dates=...)
 ├── upcoming.candidates.resolve_latest_league_discoveries(...)
 │   └── upcoming-candidates와 같은 최신 결과·fallback 규칙 사용
 ├── upcoming.candidates.select_upcoming_candidates(...)
@@ -165,6 +174,92 @@ cli.watch_upcoming(within_minutes, sport_code, league_labels, interval, max_cycl
 저장 결과는 일반 `watch`와 같은 Event View 원문·CaptureMetadata·EventObservation·
 StructureChangeRecord이므로 별도의 `watch-upcoming` 저장 형식은 없습니다.
 
+## `auto-watch` 호출 트리
+
+```text
+cli.auto_watch(within_minutes, interval, candidate_check_interval, max_cycles)
+├── upcoming.targets.load_upcoming_targets(...)
+├── upcoming.targets.select_auto_watch_targets(...)
+│   └── auto_watch_enabled=true인 리그만 새 후보 대상으로 선택
+├── auto_watch.config.load_auto_watch_config(...)
+│   └── config/auto_watch.yaml의 상태 그룹·관찰 상한 검증
+├── settings.Settings()
+├── auto_watch.state.load_auto_watch_state(...)
+│   └── 없으면 빈 상태를 만들고 즉시 저장
+└── cli._run_auto_watch(...)
+    ├── 후보 확인 시각이 되면 매번
+    │   ├── 설정 파일 다시 로드
+    │   ├── upcoming.candidates.candidate_target_dates(...)
+    │   ├── upcoming.storage.find_league_upcoming_discovery_paths(target_dates=...)
+    │   │   └── 후보 시간 범위가 걸치는 UTC 날짜 디렉터리만 탐색
+    │   ├── upcoming.candidates.resolve_latest_league_discoveries(...)
+    │   ├── upcoming.candidates.select_upcoming_candidates(...)
+    │   └── auto_watch.state.add_auto_watch_candidates(...)
+    ├── auto_watch.policy.find_due_auto_watch_events(...)
+    │   ├── time_status=3 감지 후 15분이면 정상 완료
+    │   └── 그 밖의 상태는 그룹별 관찰 상한 적용
+    ├── 중단 대상이 있으면
+    │   ├── auto_watch.state.mark_auto_watch_stop_decisions(...)
+    │   │   └── stopped_at을 상태 파일에 먼저 고정
+    │   ├── 3이 아니면 auto_watch.exceptions.save_auto_watch_exception_record(...)
+    │   └── 저장 성공 이벤트만 auto_watch.state.remove_auto_watch_events(...)
+    ├── 활성 이벤트를 최대 10개씩 매 주기 다시 배치
+    ├── 배치마다 cli._capture_auto_watch_batch(...)
+    │   ├── event_view.request_log.start_event_view_api_request(...)
+    │   │   └── HTTP 호출 전에 요청 ID·이벤트·종목·호출 분류 저장
+    │   ├── event_view.collector.capture_event_view(...)
+    │   ├── event_view.request_log.finish_event_view_api_request(...)
+    │   │   └── 같은 파일에 HTTP 상태 또는 오류 유형을 원자적으로 반영
+    │   ├── 성공 Observation 구조 비교
+    │   └── 401·402·403·429면 전체 자동 수집 중단
+    ├── cli._update_auto_watch_states(...)
+    │   └── 상태 그룹·최초 감지 시각·마지막 CaptureMetadata 경로 반영
+    └── 상태가 바뀔 때 auto_watch.state.save_auto_watch_state(...)
+```
+
+```text
+별도 discover-upcoming 실행
+          │ 새 Discovery 저장
+          ▼
+data/discoveries/events-upcoming
+          │ 5분마다 다시 읽기
+          ▼
+      auto-watch ──────► Event View Capture·Observation·구조 변화
+          │
+          ├────────────► data/state/auto-watch/state.json
+          ├────────────► data/exceptions/auto-watch/time-status-*/...
+          └────────────► data/metrics/event-view-api-requests/...
+```
+
+활성 목록은 메모리에만 두지 않고 상태 파일에 원자적으로 저장합니다. 따라서 프로세스가
+재시작되어도 이벤트, 상태 그룹의 최초 감지 시각과 고정된 중단 결정 시각을 복구합니다.
+예외 기록은 `stop_time_status` 디렉터리와 UTC `stopped_at` 날짜·파일명을 사용하고,
+JSON에는 예정 시각을 UTC와 KST로 함께 저장합니다. 예외 저장에 실패한 이벤트는 상태
+파일에 남지만 다음 유료 API 요청에서는 제외하고 같은 경로로 저장을 재시도합니다.
+API 요청 기록도 실제 HTTP
+호출 전에 먼저 만들어 기록 저장에 실패하면 유료 API를 호출하지 않습니다. 요청에는
+이벤트별 `event_id`와 `sport_code`를 보존하고 종목별 이벤트 개수 집계 필드는 중복
+저장하지 않습니다. 호출 분류는 `football_only`, `baseball_only`, `mixed`, `unknown`
+중 하나입니다.
+
+`AutoWatchCollectionMode`는 응답 상태에 따른 수집 처리 방식을 나타냅니다.
+`inplay`는 1, `ended`는 3, `waiting_to_start`는 0·2,
+`temporarily_stopped`는 7·10, `closing`은 4·5·6·8·9·11·12·99에 대응하며,
+나머지는 `unknown`입니다. 이 중 시간 제한을 저장해야 하는 네 그룹만
+`AutoWatchTimeLimitedStatusGroup`으로 제한합니다. 기존 상태 파일의 `prestart`와
+`resumable` 값은 읽을 때 각각 `waiting_to_start`, `temporarily_stopped`로 변환합니다.
+
+연결 오류와 재시도 가능한 HTTP 오류는 즉시 반복 호출하지 않고 다음 정규 수집 주기에
+다시 시도합니다. 인증·결제·권한·호출 제한을 뜻하는 401·402·403·429와 로컬 Capture
+저장 실패는 자동 반복으로 해결할 수 없거나 비용만 발생시킬 수 있으므로 명령을
+중단합니다. `time_status=1`은 경기 중, `3`은 정상 종료로 처리합니다. `0·2`는 예정
+시각 이후 2시간, `7·10`은 연속 2시간, `4·5·6·8·9·11·12·99`는 15분까지
+관찰합니다. 설정에 없는 값은 연속 1시간 관찰한 뒤 예외 기록 대상으로 처리합니다.
+
+1단계는 상태 파일을 공유하는 단일 `auto-watch` 프로세스를 전제로 합니다. 같은
+저장소에서 여러 프로세스를 동시에 실행할 때의 잠금과 리더 선출은 아직 구현하지
+않았습니다.
+
 ## `collect` 호출 트리
 
 ```text
@@ -177,8 +272,12 @@ cli.collect(event_ids)
 ├── event_view.request.build_event_view_request_batches(...)
 │   └── 전체 ID를 최대 10개씩 한 수집 주기의 요청 배치로 구성
 └── 각 배치마다 event_view.collector.capture_event_view(requested_event_ids=...)
+    ├── event_view.request_log.start_event_view_api_request(...)
+    │   └── HTTP 호출 전에 토큰 없는 요청 파일 저장
     ├── bets_api_client.get_event_view(...)
     │   └── GET /v1/event/view?event_id=A,B,...
+    ├── event_view.request_log.finish_event_view_api_request(...)
+    │   └── HTTP 상태 또는 연결 오류 유형을 같은 파일에 반영
     ├── event_view.storage.save_raw_response(response.content, captured_at)
     ├── response.json()
     ├── event_view.response.analyze_event_view_response(...)
@@ -197,6 +296,9 @@ cli.collect(event_ids)
 반환합니다.
 개별 EventObservation 저장 실패는 `CaptureResult.observation_save_failures`에 모으고,
 성공한 Capture는 유지합니다.
+호출 기록을 시작하지 못하면 API를 호출하지 않습니다. `collect`, `watch`,
+`watch-upcoming`, `auto-watch`가 이 공통 함수를 사용하므로 네 명령의 Event View 요청이
+모두 같은 호출 기록 디렉터리에 남습니다.
 
 ## `collect-odds` 호출 트리
 
@@ -469,6 +571,10 @@ data/
 ├── metadata/event-odds/{UTC 수집 날짜}/{event_id}.json
 ├── observations/event-view/{event_id}/{capture_file}
 ├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
+├── metrics/event-view-api-requests/{UTC 요청 날짜}/{request_id}.json
+├── state/auto-watch/state.json
+├── exceptions/auto-watch/time-status-{값}/{UTC stopped_at 날짜}/
+│   └── {UTC stopped_at 시각 Z}_{event_id}.json
 ├── raw/events-upcoming/{KST 호출 날짜}/{capture_file}
 ├── metadata/events-upcoming/{KST 호출 날짜}/{capture_file}
 └── discoveries/events-upcoming/{UTC target_date}/
@@ -491,16 +597,24 @@ data/
 | `LeagueUpcomingDiscovery` | 한 리그의 조회 결과·이벤트 또는 실패 내역 | 이벤트 요약만 포함 |
 | `UpcomingDiscoveryRun` | 한 CLI 실행의 대상과 리그별 Discovery 경로 | 포함하지 않음 |
 | `OddsSnapshotMetadata` | 이벤트별 일간 최신 Odds 원문의 요청·응답 정보 | 포함하지 않음 |
+| `AutoWatchState` | 재시작할 활성 이벤트와 상태별 관찰·중단 결정 시각 | 포함하지 않음 |
+| `AutoWatchExceptionRecord` | 정상 종료 외 상태로 관찰 상한에 도달한 이벤트 | 원문 대신 상태·출처 경로 포함 |
+| `EventViewApiRequestRecord` | Event View 요청 한 번의 종목 조합·결과 | 포함하지 않음 |
 
 ## 주요 모듈과 함수
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `auto_watch`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
+| `auto_watch/config.py` | `load_auto_watch_config`, `AutoWatchConfig` | 상태 그룹과 관찰 상한 설정 검증 |
+| `auto_watch/policy.py` | `apply_auto_watch_time_status`, `find_due_auto_watch_events` | 상태 전이와 수집 종료 시각 판정 |
+| `auto_watch/exceptions.py` | `build_auto_watch_exception_record`, `save_auto_watch_exception_record` | 상태값·UTC 중단 시각별 예외 기록 저장 |
+| `auto_watch/state.py` | `load_auto_watch_state`, `save_auto_watch_state`, `add_auto_watch_candidates`, `mark_auto_watch_stop_decisions`, `remove_auto_watch_events` | 활성 이벤트의 재시작 복구와 중단 처리 |
+| `event_view/request_log.py` | `start_event_view_api_request`, `finish_event_view_api_request`, `classify_request_category` | HTTP 호출 전 기록과 종목 조합별 호출 분류 |
 | `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
 | `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events`, `get_event_odds` | BETS API HTTP 호출 |
-| `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets` | Upcoming 설정 로드·검증과 리그 선택 |
+| `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets`, `select_auto_watch_targets` | Upcoming 설정 로드·검증과 직접·자동 리그 선택 |
 | `upcoming/candidates.py` | `resolve_latest_league_discoveries`, `select_upcoming_candidates` | 최신 사용 가능 Discovery 선택과 시간 범위 후보 계산 |
 | `upcoming/response.py` | `analyze_upcoming_response` | Upcoming 이벤트·이슈·페이징 분석 |
 | `upcoming/discovery.py` | `discover_upcoming_events`, `capture_upcoming_target` | 대상별 부분 실패 수집과 리그·Run Discovery 생성 |

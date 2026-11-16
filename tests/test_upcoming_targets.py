@@ -8,6 +8,7 @@ from scorenow_api_observer.upcoming.targets import (
     InvalidUpcomingTargetSelectionError,
     UpcomingTarget,
     load_upcoming_targets,
+    select_auto_watch_targets,
     select_upcoming_targets,
 )
 
@@ -27,18 +28,20 @@ def _sport_config(tmp_path: Path) -> Path:
 def test_load_upcoming_targets_reads_default_config() -> None:
     targets = load_upcoming_targets()
 
-    assert len(targets) == 42
+    assert len(targets) == 43
     assert targets[0] == UpcomingTarget(
         sport_id="1",
         sport_code="football",
         league_id="1040",
         league_label="uefa-champions-league",
+        auto_watch_enabled=True,
     )
     assert targets[-1] == UpcomingTarget(
         sport_id="16",
         sport_code="baseball",
-        league_id="38891",
-        league_label="wbsc-premier-12",
+        league_id="41719",
+        league_label="apbc",
+        auto_watch_enabled=True,
     )
 
 
@@ -167,3 +170,12 @@ def test_select_upcoming_targets_rejects_unknown_label() -> None:
 
     with pytest.raises(InvalidUpcomingTargetSelectionError, match="unknown"):
         select_upcoming_targets(targets, "unknown")
+
+
+def test_select_auto_watch_targets_returns_only_enabled_targets() -> None:
+    targets = [
+        UpcomingTarget("16", "baseball", "225", "mlb", False),
+        UpcomingTarget("16", "baseball", "41719", "apbc", True),
+    ]
+
+    assert select_auto_watch_targets(targets) == [targets[1]]

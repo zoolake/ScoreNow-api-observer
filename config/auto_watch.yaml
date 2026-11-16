@@ -1,0 +1,16 @@
+status_policies:
+  waiting_to_start:
+    statuses: [0, 2]
+    max_minutes_after_scheduled_at: 120
+  temporarily_stopped:
+    statuses: [7, 10]
+    max_continuous_minutes: 120
+  closing:
+    statuses: [4, 5, 6, 8, 9, 11, 12, 99]
+    followup_minutes: 15
+  unknown:
+    max_continuous_minutes: 60
+
+ended:
+  status: 3
+  followup_minutes: 15

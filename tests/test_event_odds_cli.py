@@ -247,7 +247,7 @@ def test_collect_upcoming_odds_collects_candidates_selected_by_schedule(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -306,7 +306,7 @@ def test_collect_upcoming_odds_returns_without_settings_when_no_candidate(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -326,7 +326,11 @@ def test_collect_upcoming_odds_returns_without_settings_when_no_candidate(
 def test_collect_upcoming_odds_exits_one_without_usable_discovery(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cli, "find_league_upcoming_discovery_paths", list)
+    monkeypatch.setattr(
+        cli,
+        "find_league_upcoming_discovery_paths",
+        lambda **_kwargs: [],
+    )
     monkeypatch.setattr(
         cli,
         "resolve_latest_league_discoveries",

@@ -184,3 +184,45 @@ def test_find_and_load_league_upcoming_discoveries(tmp_path: Path) -> None:
 
     assert result == [expected_path]
     assert load_league_upcoming_discovery(expected_path) == discovery
+
+
+def test_find_league_upcoming_discoveries_limits_target_dates(
+    tmp_path: Path,
+) -> None:
+    discovery = LeagueUpcomingDiscovery(
+        discovery_run_id="2026-11-13T01-00-00_KST",
+        status="completed",
+        completed_at=datetime(2026, 11, 12, 16, 1, tzinfo=UTC),
+        target_date=date(2026, 11, 13),
+        target=_target(),
+        capture_metadata_file_path="data/metadata/capture.json",
+        events=[],
+        failure=None,
+    )
+    past_path = save_league_upcoming_discovery(
+        discovery.model_copy(
+            update={
+                "discovery_run_id": "2026-11-12T01-00-00_KST",
+                "target_date": date(2026, 11, 12),
+            }
+        ),
+        base_directory=tmp_path,
+    )
+    current_path = save_league_upcoming_discovery(discovery, base_directory=tmp_path)
+    next_path = save_league_upcoming_discovery(
+        discovery.model_copy(
+            update={
+                "discovery_run_id": "2026-11-14T01-00-00_KST",
+                "target_date": date(2026, 11, 14),
+            }
+        ),
+        base_directory=tmp_path,
+    )
+
+    result = find_league_upcoming_discovery_paths(
+        tmp_path,
+        target_dates=(date(2026, 11, 14), date(2026, 11, 13)),
+    )
+
+    assert result == [current_path, next_path]
+    assert past_path not in result

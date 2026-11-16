@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from scorenow_api_observer.upcoming.candidates import (
     LoadedLeagueDiscovery,
+    candidate_target_dates,
     normalize_candidate_sport_code,
     parse_candidate_league_labels,
     resolve_latest_league_discoveries,
@@ -20,6 +21,17 @@ from scorenow_api_observer.upcoming.models import (
 )
 
 KST = ZoneInfo("Asia/Seoul")
+
+
+def test_candidate_target_dates_uses_only_dates_touched_by_window() -> None:
+    assert candidate_target_dates(
+        now=datetime(2026, 11, 13, 9, tzinfo=UTC),
+        within_minutes=10,
+    ) == (date(2026, 11, 13),)
+    assert candidate_target_dates(
+        now=datetime(2026, 11, 13, 23, 55, tzinfo=UTC),
+        within_minutes=10,
+    ) == (date(2026, 11, 13), date(2026, 11, 14))
 
 
 def _event(event_id: str, scheduled_at: datetime) -> DiscoveredUpcomingEvent:

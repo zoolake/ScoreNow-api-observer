@@ -304,7 +304,7 @@ def test_upcoming_candidates_prints_events_from_saved_discoveries(monkeypatch) -
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -349,7 +349,7 @@ def test_upcoming_candidates_returns_zero_when_no_event_is_in_window(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -370,7 +370,7 @@ def test_upcoming_candidates_exits_with_one_without_usable_discovery(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        list,
+        lambda **_kwargs: [],
     )
     monkeypatch.setattr(
         cli,
@@ -435,7 +435,7 @@ def test_watch_upcoming_batches_candidates_and_waits_between_cycles(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -489,7 +489,7 @@ def test_watch_upcoming_returns_without_api_settings_when_no_candidate(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,
@@ -552,7 +552,7 @@ def test_watch_upcoming_continues_with_next_batch_after_storage_failure(
     monkeypatch.setattr(
         cli,
         "find_league_upcoming_discovery_paths",
-        lambda: [path],
+        lambda **_kwargs: [path],
     )
     monkeypatch.setattr(
         cli,

@@ -57,14 +57,20 @@ targets:
     leagues:
       - league_id: "349"
         label: kbo
+        auto_watch_enabled: false
       - league_id: "225"
         label: mlb
+        auto_watch_enabled: false
 ```
 
 `sport_id`는 [`config/betsapi_sports.yaml`](config/betsapi_sports.yaml)에 등록된
 값이어야 합니다. `label`은 파일명에도 사용되므로 설정 전체에서 고유한 영문 소문자,
 숫자, 하이픈 조합이어야 합니다. 종목별 Discovery 디렉터리에 사용하는 `sport_code`도
 설정 전체에서 고유한 같은 형식이어야 합니다.
+
+`auto_watch_enabled`는 `auto-watch`가 자동 수집 후보로 사용할 리그인지 나타냅니다.
+시즌이 진행 중인 리그만 `true`로 관리합니다. 필드를 생략하면 안전하게 `false`로
+해석합니다. 이 값은 `discover-upcoming`의 직접 조회 대상에는 영향을 주지 않습니다.
 
 ### 5. 예정 경기 탐색
 
@@ -118,7 +124,26 @@ uv run observer watch-upcoming \
 감지 후 15분 추가 수집을 마친 이벤트는 다음 주기부터 제외하므로 이후 배치 수와 실제
 호출 횟수는 줄어들 수 있습니다. 이 명령은 Upcoming API를 다시 호출하지 않습니다.
 
-### 8. 곧 시작하는 경기의 배당률 수집
+### 8. 저장된 Discovery를 계속 확인하며 자동 수집
+
+`auto-watch`는 `auto_watch_enabled: true`인 리그의 저장된 Discovery를 주기적으로 다시
+읽습니다. 실행 중 별도의 `discover-upcoming` 명령이 새 경기를 저장해도 다음 후보 확인
+때 자동 수집 대상에 추가합니다.
+
+```bash
+uv run observer auto-watch
+```
+
+기본값은 경기 시작 10분 전부터 후보에 추가하고, Discovery 후보는 5분마다 다시
+확인하며, 활성 경기는 30초마다 Event View로 수집합니다. `auto-watch` 자체는 Upcoming
+API를 호출하지 않으므로 새로운 Discovery를 만들려면 별도 명령이나 외부 스케줄러에서
+`discover-upcoming`을 실행해야 합니다.
+
+활성 이벤트와 상태별 관찰 시작·중단 결정 시각은
+`data/state/auto-watch/state.json`에 저장됩니다. 프로세스를 다시 시작하면 이 파일에서
+이어서 수집합니다. 상태별 관찰 상한은 `config/auto_watch.yaml`에서 관리합니다.
+
+### 9. 곧 시작하는 경기의 배당률 수집
 
 저장된 Discovery에서 현재부터 10분 이내 시작하는 경기를 선택해 Event Odds API를
 이벤트별로 한 번 호출합니다. Upcoming API는 다시 호출하지 않습니다.
@@ -134,7 +159,7 @@ uv run observer collect-upcoming-odds \
 않습니다. 이미 Odds Snapshot이 있는 이벤트도 다시 호출하고, 유효한 최신 응답으로
 같은 UTC 날짜의 Snapshot을 교체합니다.
 
-### 9. 첫 응답 수집
+### 10. 첫 응답 수집
 
 ```bash
 uv run observer collect --event-ids BETS_EVENT_ID_1
@@ -153,7 +178,7 @@ data/raw/event-view/YYYY-MM-DD/...
 data/metadata/event-view/YYYY-MM-DD/...
 ```
 
-### 10. 반복 수집 및 구조 변화 관찰
+### 11. 반복 수집 및 구조 변화 관찰
 
 다음 예시는 두 경기를 한 요청으로 묶어 30초 간격으로 3회 수집합니다.
 
@@ -173,7 +198,7 @@ uv run observer watch \
 uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 ```
 
-### 11. 저장된 최근 응답 비교
+### 12. 저장된 최근 응답 비교
 
 같은 경기의 응답이 두 개 이상 저장된 후 다음 명령으로 최근 두 응답을 다시 비교할 수 있습니다.
 
@@ -181,7 +206,7 @@ uv run observer watch --event-ids BETS_EVENT_ID_1,BETS_EVENT_ID_2 --interval 30
 uv run observer compare --event-id BETS_EVENT_ID_1
 ```
 
-### 12. 저장된 자료의 Markdown 보고서 생성
+### 13. 저장된 자료의 Markdown 보고서 생성
 
 ```bash
 uv run observer report
@@ -237,6 +262,8 @@ uv run observer upcoming-candidates --within-minutes 10
 
 - `--within-minutes`: 현재부터 후보로 포함할 분 단위 범위입니다. 기본값은 `10`이며
   최소값은 `1`입니다. 현재 시각과 정확히 범위의 마지막 시각도 포함합니다.
+- 전체 저장 이력을 읽지 않고 후보 시간 범위가 걸치는 UTC `target_date` 디렉터리만
+  탐색합니다. 일반적으로 오늘 하나이며 UTC 자정을 넘는 범위면 오늘과 내일을 읽습니다.
 - `--sport-code`: 특정 내부 종목 코드만 조회합니다. 생략하면 전체 종목을 대상으로
   합니다.
 - `--league-labels`: 리그 label을 쉼표로 구분해 필터링합니다. 생략하면 전체 리그를
@@ -306,6 +333,7 @@ uv run observer watch-upcoming \
   이벤트가 종료 후 추가 수집을 마치거나 `Ctrl+C`로 중단할 때까지 계속 수집합니다.
 - 후보는 명령 시작 시 한 번 확정합니다. 실행 중 새 Discovery가 저장되거나 예정
   경기가 추가되어도 현재 실행의 수집 대상은 바뀌지 않습니다.
+- 명령 시작 시 후보 시간 범위가 걸치는 UTC `target_date` 디렉터리만 읽습니다.
 - 활성 후보 순서를 유지하면서 최대 10개씩 Event View 요청 배치로 나눕니다. 종료
   감지 후 15분 추가 수집을 마친 이벤트를 제외하고 매 주기 배치를 다시 구성합니다.
   예를 들어 활성 후보 23개에는 한 주기에 3번의 API 호출이 발생합니다.
@@ -321,6 +349,83 @@ uv run observer watch-upcoming \
   수집합니다. 그사이 다른 숫자 상태가 관측되면 종료 감지를 취소하며, 이벤트 누락이나
   해석할 수 없는 상태는 기존 종료 감지를 변경하지 않습니다.
 - 모든 이벤트의 추가 수집이 끝나면 `--max-cycles`보다 일찍 자동 종료합니다.
+
+### `observer auto-watch`
+
+시즌 진행 리그로 설정된 저장 Discovery를 계속 다시 읽고, 곧 시작하는 경기를 활성
+목록에 추가하여 Event View를 반복 수집합니다.
+
+```bash
+uv run observer auto-watch \
+  --within-minutes 10 \
+  --interval 30 \
+  --candidate-check-interval 300
+```
+
+- `--within-minutes`: 새 활성 이벤트로 추가할 예정 경기의 시작 범위입니다. 기본값은
+  `10`분입니다.
+- `--interval`, `-i`: 활성 Event View 배치 전체의 수집 주기입니다. 기본값은
+  `30`초입니다.
+- `--candidate-check-interval`: 설정과 저장된 Discovery를 다시 읽을 목표 간격입니다.
+  기본값은 `300`초입니다. 실제 확인은 수집 주기 시작 시 수행하므로 최대 한 수집
+  주기만큼 늦어질 수 있습니다.
+- `--max-cycles`, `-c`: 테스트나 제한 실행에 사용할 최대 자동 처리 주기입니다.
+  운영 시 생략하면 `Ctrl+C` 또는 중단해야 하는 오류가 생길 때까지 실행합니다.
+- `config/betsapi_upcoming_targets.yaml`에서 `auto_watch_enabled: true`인 리그만 새
+  후보로 선택합니다. 이미 활성 목록에 들어간 이벤트는 설정이 바뀌어도 중간에
+  제거하지 않습니다.
+- 매 후보 확인 때 Discovery 파일 목록과 설정을 새로 읽으므로, 실행 중 별도의
+  `discover-upcoming`이 저장한 새 예정 경기도 감지할 수 있습니다.
+- 매번 전체 과거 이력을 읽지 않고 `now`부터 `now + within_minutes`까지 걸치는 UTC
+  날짜 디렉터리만 읽습니다. UTC 자정을 넘는 후보 범위는 두 날짜를 모두 확인합니다.
+- Upcoming API를 직접 호출하지 않습니다. `discover-upcoming` 자동 실행은 이 단계에
+  포함되지 않으므로 cron, 클라우드 스케줄러 또는 수동 명령으로 별도 실행해야 합니다.
+- 상태별 관찰 정책은 실행 시작 시 `config/auto_watch.yaml`에서 읽습니다. 실행 중
+  설정을 바꾼 경우 재시작해야 하며, 이미 관찰 중인 이벤트의 그룹은 다음 정상 응답에서
+  `time_status`를 다시 확인할 때 갱신됩니다.
+- `time_status=1`은 계속 수집하고 `3`은 최초 감지 후 15분 추가 수집합니다.
+  `0·2`는 예정 시각 이후 2시간, `7·10`은 연속 감지 후 2시간까지 관찰합니다.
+  `4·5·6·8·9·11·12·99`는 최초 감지 후 15분 추가 수집합니다. 설정에 없는 숫자나
+  해석할 수 없는 상태는 연속 1시간까지 관찰합니다.
+- `1`로 돌아오면 이전 상태의 연속 관찰 타이머를 해제합니다. `7`과 `10`처럼 같은
+  정책 그룹 안에서 값만 바뀐 경우에는 최초 감지 시각을 유지합니다.
+- `3` 이외의 상태로 상한에 도달하면 다음 경로에 예외 JSON을 저장한 뒤 활성
+  목록에서 제거합니다.
+
+  ```text
+  data/exceptions/auto-watch/time-status-{stop_time_status}/
+    {UTC stopped_at 날짜}/{UTC stopped_at 시각 Z}_{event_id}.json
+  ```
+
+  숫자로 해석할 수 없는 상태는 `time-status-unknown`에 저장합니다. JSON에는
+  `scheduled_at_utc`와 이를 변환한 `scheduled_at_kst`, `stop_time_status`,
+  `stopped_at`, 마지막 CaptureMetadata 경로가 포함됩니다.
+- 중단 결정 시각을 상태 파일에 먼저 저장한 뒤 예외 JSON을 저장합니다. 예외 저장에
+  실패한 이벤트는 활성 목록에 남겨 같은 경로로 재시도하되, 추가 API 요청에서는
+  제외합니다.
+- HTTP 401, 402, 403, 429는 자동 재시도하지 않고 전체 명령을 종료합니다. 연결 오류와
+  그 밖의 HTTP 오류는 즉시 연속 호출하지 않고 다음 Event View 수집 주기에만 다시
+  시도합니다.
+- Capture를 저장하지 못하거나 API 호출 기록을 저장하지 못하면 결과 없이 유료 호출을
+  반복하지 않도록 전체 명령을 중단합니다.
+- 1단계에는 클라우드 배포, 자동 보고서 생성, 알림, Replay·Mock API 서버가 포함되지
+  않습니다.
+- 상태 파일을 공유하는 동시 실행 잠금은 아직 없으므로 `auto-watch`는 한 저장소에서
+  한 프로세스만 실행해야 합니다.
+
+실행 중 실제 HTTP 요청을 시작하기 전에 다음 경로에 호출 기록을 먼저 만듭니다.
+
+```text
+data/metrics/event-view-api-requests/{UTC 날짜}/{request_id}.json
+```
+
+한 파일이 실제 요청 시도 한 번입니다. 요청 완료 후 같은 파일에 HTTP 상태 또는 오류
+유형을 기록합니다. `football_event_id_count`, `baseball_event_id_count` 같은 중복 집계
+필드는 저장하지 않습니다. 대신 요청별 `requested_events`에 이벤트 ID와 종목을 남겨
+필요할 때 다시 계산할 수 있게 합니다. CLI 종료 요약은 축구 전용·야구 전용·혼합·분류
+불가 요청 횟수를 보여줍니다. 이 영속 기록은 `auto-watch`뿐 아니라 공통 Event View
+수집 함수를 사용하는 `collect`, `watch`, `watch-upcoming`에도 생성됩니다. 직접 입력한
+이벤트처럼 종목을 확정할 근거가 없으면 `unknown`으로 기록합니다.
 
 ### `observer collect`
 
