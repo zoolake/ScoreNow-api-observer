@@ -5,15 +5,16 @@ from pathlib import Path
 import httpx
 
 from scorenow_api_observer.bets_api_client import EVENT_VIEW_ENDPOINT, get_event_view
-from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.event_view.request_log import (
-    EVENT_VIEW_REQUEST_LOG_DIRECTORY,
-    EventViewApiRequestRecord,
+from scorenow_api_observer.bets_api_request_log import (
+    BETS_API_REQUEST_LOG_DIRECTORY,
+    BetsApiRequestRecord,
+    EventViewRequestDetails,
     RequestedEvent,
-    finish_event_view_api_request,
+    finish_bets_api_request,
     parse_rate_limit_headers,
-    start_event_view_api_request,
+    start_bets_api_request,
 )
+from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
 from scorenow_api_observer.event_view.response import (
     InvalidEventViewResponseShapeError,
     analyze_event_view_response,
@@ -51,7 +52,7 @@ class CaptureResult:
     metadata: CaptureMetadata
     observation_save_failures: list[EventObservationSaveFailure]
     event_observations: list[EventObservation]
-    api_request_record: EventViewApiRequestRecord | None = None
+    api_request_record: BetsApiRequestRecord | None = None
 
 
 def capture_event_view(
@@ -60,7 +61,7 @@ def capture_event_view(
     token: str,
     requested_event_ids: list[str],
     sport_codes_by_event_id: dict[str, str] | None = None,
-    request_log_base_directory: Path = EVENT_VIEW_REQUEST_LOG_DIRECTORY,
+    request_log_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
 ) -> CaptureResult:
     """Event View API 를 한 번 호출하고 응답과 메타데이터를 저장합니다."""
 
@@ -77,8 +78,8 @@ def capture_event_view(
         for event_id in requested_event_ids
     ]
     try:
-        request_handle = start_event_view_api_request(
-            requested_events=requested_events,
+        request_handle = start_bets_api_request(
+            request=EventViewRequestDetails(requested_events=requested_events),
             requested_at=requested_at,
             base_directory=request_log_base_directory,
         )
@@ -92,7 +93,7 @@ def capture_event_view(
             requested_event_ids=requested_event_ids,
         )
     except httpx.RequestError as error:
-        finish_event_view_api_request(
+        finish_bets_api_request(
             handle=request_handle,
             completed_at=datetime.now(UTC),
             outcome="request_error",
@@ -100,7 +101,7 @@ def capture_event_view(
         )
         raise
 
-    api_request_record = finish_event_view_api_request(
+    api_request_record = finish_bets_api_request(
         handle=request_handle,
         completed_at=datetime.now(UTC),
         outcome="completed",

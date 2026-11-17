@@ -5,6 +5,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from scorenow_api_observer.bets_api_request_log import (
+    BetsApiRequestRecord,
+    EventOddsRequestDetails,
+)
 from scorenow_api_observer.event_odds import collector
 from scorenow_api_observer.event_odds.collector import collect_event_odds
 from scorenow_api_observer.event_odds.models import OddsSnapshotMetadata
@@ -26,7 +30,12 @@ def _valid_response(*, market_key: str = "16_1") -> httpx.Response:
                 "odds": {market_key: [{"id": "ODDS-1", "home_od": "1.90"}]},
             },
         },
-        headers={"content-type": "application/json"},
+        headers={
+            "content-type": "application/json",
+            "x-ratelimit-limit": "3600",
+            "x-ratelimit-remaining": "3599",
+            "x-ratelimit-reset": "1794877200",
+        },
     )
 
 
@@ -46,9 +55,11 @@ def test_collect_event_odds_saves_each_event_and_returns_completed_result(
         base_url="https://example.test",
         token="secret",
         event_ids=["A", "B"],
+        sport_codes_by_event_id={"A": "football", "B": "football"},
         now=_clock(2),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert requested_event_ids == ["A", "B"]
@@ -61,6 +72,19 @@ def test_collect_event_odds_saves_each_event_and_returns_completed_result(
         "A",
         "B",
     ]
+    request_records = [
+        BetsApiRequestRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "requests").rglob("*.json")
+    ]
+    assert len(request_records) == 2
+    assert all(record.endpoint == "/v2/event/odds" for record in request_records)
+    assert all(record.request_category == "football_only" for record in request_records)
+    assert all(record.rate_limit is not None for record in request_records)
+    assert {
+        record.request.event_id
+        for record in request_records
+        if isinstance(record.request, EventOddsRequestDetails)
+    } == {"A", "B"}
     assert result.snapshots[0].metadata.returned_market_keys == ["16_1"]
     assert result.snapshots[0].metadata.record_counts_by_market == {"16_1": 1}
     saved_metadata = result.snapshots[0].metadata_file_path.read_text(encoding="utf-8")
@@ -90,6 +114,7 @@ def test_collect_event_odds_continues_after_request_failure(
         now=_clock(1),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert requested_event_ids == ["A", "B"]
@@ -133,6 +158,7 @@ def test_collect_event_odds_does_not_replace_snapshot_for_invalid_response(
         now=_clock(1),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert result.status == "failed"
@@ -167,6 +193,7 @@ def test_collect_event_odds_continues_after_snapshot_storage_failure(
         now=_clock(2),
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert result.status == "partial"
@@ -174,3 +201,35 @@ def test_collect_event_odds_continues_after_snapshot_storage_failure(
         "storage_failed",
         "captured",
     ]
+
+
+def test_collect_event_odds_does_not_call_api_when_request_log_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        collector,
+        "start_bets_api_request",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(
+        collector,
+        "get_event_odds",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("호출 기록 없이 API를 호출하면 안 됩니다.")
+        ),
+    )
+
+    result = collect_event_odds(
+        base_url="https://example.test",
+        token="secret",
+        event_ids=["A"],
+        raw_base_directory=tmp_path / "raw",
+        metadata_base_directory=tmp_path / "metadata",
+        request_log_base_directory=tmp_path / "requests",
+    )
+
+    assert result.status == "failed"
+    assert result.event_results[0].status == "storage_failed"
+    assert result.event_results[0].error_message is not None
+    assert "API 요청 기록 저장에 실패" in result.event_results[0].error_message

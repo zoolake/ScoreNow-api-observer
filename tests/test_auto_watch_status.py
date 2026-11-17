@@ -22,11 +22,21 @@ from scorenow_api_observer.auto_watch.status import (
     build_auto_watch_status_report,
     render_auto_watch_status,
 )
-from scorenow_api_observer.event_view.request_log import (
-    EventViewApiRequestRecord,
+from scorenow_api_observer.bets_api_request_log import (
+    BetsApiRequestRecord,
+    EventOddsRequestDetails,
+    EventViewRequestDetails,
     RateLimitSnapshot,
     RequestedEvent,
+    UpcomingRequestDetails,
     classify_request_category,
+    classify_sport_codes,
+)
+from scorenow_api_observer.event_view.request_log import (
+    EventViewApiRequestRecord as LegacyEventViewApiRequestRecord,
+)
+from scorenow_api_observer.event_view.request_log import (
+    RequestedEvent as LegacyRequestedEvent,
 )
 
 KST = ZoneInfo("Asia/Seoul")
@@ -46,15 +56,76 @@ def _save_request_record(
         RequestedEvent(event_id=f"{request_id}-{index}", sport_code=sport_code)
         for index, sport_code in enumerate(sport_codes)
     ]
-    record = EventViewApiRequestRecord(
+    record = BetsApiRequestRecord(
         request_id=request_id,
         requested_at=requested_at,
         completed_at=requested_at + timedelta(seconds=1),
+        endpoint="/v1/event/view",
         request_category=classify_request_category(requested_events),
-        requested_events=requested_events,
+        request=EventViewRequestDetails(requested_events=requested_events),
         outcome="completed",
         http_status_code=http_status_code,
         rate_limit=rate_limit,
+    )
+    output_path = (
+        base_directory / requested_at.date().isoformat() / f"{request_id}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+    return output_path
+
+
+def _save_upcoming_request_record(
+    base_directory: Path,
+    *,
+    request_id: str,
+    requested_at: datetime,
+    sport_code: str,
+) -> Path:
+    record = BetsApiRequestRecord(
+        request_id=request_id,
+        requested_at=requested_at,
+        completed_at=requested_at + timedelta(seconds=1),
+        endpoint="/v3/events/upcoming",
+        request_category=classify_sport_codes([sport_code]),
+        request=UpcomingRequestDetails(
+            sport_id="1" if sport_code == "football" else "16",
+            sport_code=sport_code,
+            league_id="league",
+            league_label="league-label",
+            target_date=requested_at.date(),
+        ),
+        outcome="completed",
+        http_status_code=200,
+    )
+    output_path = (
+        base_directory / requested_at.date().isoformat() / f"{request_id}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+    return output_path
+
+
+def _save_odds_request_record(
+    base_directory: Path,
+    *,
+    request_id: str,
+    requested_at: datetime,
+    sport_code: str | None,
+) -> Path:
+    record = BetsApiRequestRecord(
+        request_id=request_id,
+        requested_at=requested_at,
+        completed_at=requested_at + timedelta(seconds=1),
+        endpoint="/v2/event/odds",
+        request_category=classify_sport_codes([sport_code]),
+        request=EventOddsRequestDetails(
+            event_id=f"event-{request_id}",
+            sport_code=sport_code,
+            odds_markets=[1, 2, 3],
+        ),
+        outcome="completed",
+        http_status_code=200,
     )
     output_path = (
         base_directory / requested_at.date().isoformat() / f"{request_id}.json"
@@ -154,6 +225,18 @@ def test_status_counts_current_hour_and_valid_headers_by_category(
             reset_at=window_end,
         ),
     )
+    _save_upcoming_request_record(
+        request_directory,
+        request_id="current-upcoming-football",
+        requested_at=datetime(2026, 11, 18, 0, 3, tzinfo=UTC),
+        sport_code="football",
+    )
+    _save_odds_request_record(
+        request_directory,
+        request_id="current-odds-baseball",
+        requested_at=datetime(2026, 11, 18, 0, 4, tzinfo=UTC),
+        sport_code="baseball",
+    )
 
     report = build_auto_watch_status_report(
         now=now,
@@ -162,18 +245,24 @@ def test_status_counts_current_hour_and_valid_headers_by_category(
         state_path=tmp_path / "missing-state.json",
         heartbeat_path=tmp_path / "missing-heartbeat.json",
         request_base_directory=request_directory,
+        legacy_event_view_request_base_directory=tmp_path / "legacy-requests",
         exception_base_directory=tmp_path / "exceptions",
     )
 
     assert report.requests.window_start == datetime(2026, 11, 18, 0, tzinfo=UTC)
     assert report.requests.window_end == window_end
-    assert len(report.requests.current_window_records) == 5
-    assert len(report.requests.daily_records) == 7
+    assert len(report.requests.current_window_records) == 7
+    assert len(report.requests.daily_records) == 9
     assert report.requests.current_window_category_counts() == {
-        "football_only": 2,
-        "baseball_only": 1,
+        "football_only": 3,
+        "baseball_only": 2,
         "mixed": 1,
         "unknown": 1,
+    }
+    assert report.requests.current_window_endpoint_counts() == {
+        "/v1/event/view": 5,
+        "/v3/events/upcoming": 1,
+        "/v2/event/odds": 1,
     }
     assert set(report.requests.valid_rate_limit_records) == {
         "football_only",
@@ -183,8 +272,11 @@ def test_status_counts_current_hour_and_valid_headers_by_category(
     output = render_auto_watch_status(report)
     assert "KST: 2026-11-18 09:00:00 ~ 2026-11-18 10:00:00" in output
     assert "UTC: 2026-11-18 00:00:00 ~ 2026-11-18 01:00:00" in output
-    assert "Soccer API: 4 / 3,600회" in output
-    assert "Baseball API: 3 / 3,600회" in output
+    assert "Soccer API: 5 / 3,600회" in output
+    assert "Baseball API: 4 / 3,600회" in output
+    assert "Event View: 5회" in output
+    assert "Upcoming: 1회" in output
+    assert "Event Odds: 1회" in output
     assert "남은 요청: 3,499회" in output
     assert "남은 요청: 3,500회" not in output
     assert "남은 요청: 3,490회" in output
@@ -192,7 +284,7 @@ def test_status_counts_current_hour_and_valid_headers_by_category(
     assert "남은 요청: 1,111회" not in output
     assert "야구 전용 응답" not in output
     assert "2026-11-18 KST 누적 요청" in output
-    assert "전체 요청 시도: 7회" in output
+    assert "전체 요청 시도: 9회" in output
 
 
 def test_status_uses_start_inclusive_end_exclusive_hour_boundary(
@@ -226,6 +318,7 @@ def test_status_uses_start_inclusive_end_exclusive_hour_boundary(
         state_path=tmp_path / "missing-state.json",
         heartbeat_path=tmp_path / "missing-heartbeat.json",
         request_base_directory=request_directory,
+        legacy_event_view_request_base_directory=tmp_path / "legacy-requests",
         exception_base_directory=tmp_path / "exceptions",
     )
 
@@ -234,6 +327,45 @@ def test_status_uses_start_inclusive_end_exclusive_hour_boundary(
     ]
     assert report.requests.window_start == now
     assert report.requests.window_end == now + timedelta(hours=1)
+
+
+def test_status_includes_legacy_event_view_request_records(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 18, 1, 10, tzinfo=UTC)
+    legacy_directory = tmp_path / "legacy-requests"
+    record = LegacyEventViewApiRequestRecord(
+        request_id="legacy-event-view",
+        requested_at=now - timedelta(minutes=5),
+        completed_at=now - timedelta(minutes=5) + timedelta(seconds=1),
+        request_category="football_only",
+        requested_events=[
+            LegacyRequestedEvent(event_id="legacy-event", sport_code="football")
+        ],
+        outcome="completed",
+        http_status_code=200,
+    )
+    output_path = (
+        legacy_directory
+        / record.requested_at.date().isoformat()
+        / "legacy-event-view.json"
+    )
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+
+    report = build_auto_watch_status_report(
+        now=now,
+        target_date_kst=date(2026, 11, 18),
+        config_path=CONFIG_PATH,
+        state_path=tmp_path / "missing-state.json",
+        heartbeat_path=tmp_path / "missing-heartbeat.json",
+        request_base_directory=tmp_path / "requests",
+        legacy_event_view_request_base_directory=legacy_directory,
+        exception_base_directory=tmp_path / "exceptions",
+    )
+
+    assert [item.request_id for item in report.requests.current_window_records] == [
+        "legacy-event-view"
+    ]
+    assert report.requests.current_window_endpoint_counts()["/v1/event/view"] == 1
 
 
 def test_status_keeps_valid_results_when_one_file_is_damaged(tmp_path: Path) -> None:
@@ -256,6 +388,7 @@ def test_status_keeps_valid_results_when_one_file_is_damaged(tmp_path: Path) -> 
         state_path=tmp_path / "missing-state.json",
         heartbeat_path=tmp_path / "missing-heartbeat.json",
         request_base_directory=request_directory,
+        legacy_event_view_request_base_directory=tmp_path / "legacy-requests",
         exception_base_directory=tmp_path / "exceptions",
     )
 
@@ -287,6 +420,7 @@ def test_status_aggregates_all_exceptions_but_limits_details(tmp_path: Path) -> 
         state_path=tmp_path / "missing-state.json",
         heartbeat_path=tmp_path / "missing-heartbeat.json",
         request_base_directory=tmp_path / "requests",
+        legacy_event_view_request_base_directory=tmp_path / "legacy-requests",
         exception_base_directory=exception_directory,
     )
 
@@ -340,6 +474,7 @@ def test_status_explains_pending_exception_save_without_api_call(
         state_path=state_path,
         heartbeat_path=heartbeat_path,
         request_base_directory=tmp_path / "requests",
+        legacy_event_view_request_base_directory=tmp_path / "legacy-requests",
         exception_base_directory=tmp_path / "exceptions",
     )
 

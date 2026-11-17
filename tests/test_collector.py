@@ -4,9 +4,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+from scorenow_api_observer.bets_api_request_log import BetsApiRequestRecord
 from scorenow_api_observer.event_view import collector
 from scorenow_api_observer.event_view.models import CaptureMetadata, EventObservation
-from scorenow_api_observer.event_view.request_log import EventViewApiRequestRecord
 from scorenow_api_observer.event_view.response import EventViewResponseIssue
 
 
@@ -258,7 +258,7 @@ def test_capture_event_view_records_request_error_without_token(
 
     record_path = next(tmp_path.rglob("*.json"))
     record_text = record_path.read_text(encoding="utf-8")
-    record = EventViewApiRequestRecord.model_validate_json(record_text)
+    record = BetsApiRequestRecord.model_validate_json(record_text)
     assert record.outcome == "request_error"
     assert record.error_type == "ConnectError"
     assert "secret-token" not in record_text
@@ -270,7 +270,7 @@ def test_capture_event_view_does_not_call_api_when_request_log_cannot_start(
 ) -> None:
     monkeypatch.setattr(
         collector,
-        "start_event_view_api_request",
+        "start_bets_api_request",
         lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
     monkeypatch.setattr(

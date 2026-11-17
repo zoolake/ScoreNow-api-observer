@@ -5,6 +5,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from scorenow_api_observer.bets_api_request_log import (
+    BetsApiRequestRecord,
+    UpcomingRequestDetails,
+)
 from scorenow_api_observer.upcoming import discovery as upcoming_discovery
 from scorenow_api_observer.upcoming.models import (
     LeagueUpcomingDiscovery,
@@ -106,6 +110,7 @@ def test_discover_upcoming_events_saves_run_and_each_league(
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert requested_targets == [("16", "225"), ("16", "349")]
@@ -133,6 +138,21 @@ def test_discover_upcoming_events_saves_run_and_each_league(
             LeagueUpcomingDiscovery.model_validate_json(file_path.read_text())
             == discovery
         )
+    request_records = sorted(
+        (
+            BetsApiRequestRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            for path in (tmp_path / "requests").rglob("*.json")
+        ),
+        key=lambda record: record.requested_at,
+    )
+    assert len(request_records) == 2
+    assert all(record.endpoint == "/v3/events/upcoming" for record in request_records)
+    assert all(record.request_category == "baseball_only" for record in request_records)
+    assert {
+        record.request.league_id
+        for record in request_records
+        if isinstance(record.request, UpcomingRequestDetails)
+    } == {"225", "349"}
     assert all(
         "secret" not in path.read_text(encoding="utf-8")
         for path in (tmp_path / "metadata").rglob("*.json")
@@ -174,6 +194,7 @@ def test_discover_upcoming_events_saves_failed_league_and_partial_run(
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert result.run.status == "partial"
@@ -213,6 +234,7 @@ def test_discover_upcoming_events_marks_response_issue_as_partial(
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert result.run.status == "partial"
@@ -246,6 +268,7 @@ def test_discover_upcoming_events_saves_skipped_leagues_after_fatal_http_error(
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert call_count == 1
@@ -283,6 +306,7 @@ def test_discover_upcoming_events_is_failed_when_every_request_fails(
         raw_base_directory=tmp_path / "raw",
         metadata_base_directory=tmp_path / "metadata",
         discovery_base_directory=tmp_path / "discoveries",
+        request_log_base_directory=tmp_path / "requests",
     )
 
     assert result.run.status == "failed"
@@ -291,3 +315,35 @@ def test_discover_upcoming_events_is_failed_when_every_request_fails(
         "failed",
     ]
     assert result.run_file_path.exists()
+
+
+def test_capture_upcoming_does_not_call_api_when_request_log_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        upcoming_discovery,
+        "start_bets_api_request",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(
+        upcoming_discovery,
+        "get_upcoming_events",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("호출 기록 없이 API를 호출하면 안 됩니다.")
+        ),
+    )
+
+    with pytest.raises(
+        upcoming_discovery.UpcomingRequestLogStartError, match="disk full"
+    ):
+        upcoming_discovery.capture_upcoming_target(
+            base_url="https://example.test",
+            token="secret",
+            target_date=date(2026, 10, 16),
+            target=_target("225", "mlb"),
+            discovery_run_id="run",
+            raw_base_directory=tmp_path / "raw",
+            metadata_base_directory=tmp_path / "metadata",
+            request_log_base_directory=tmp_path / "requests",
+        )

@@ -130,10 +130,12 @@ def _latest_discoveries(
 
 def test_collect_odds_normalizes_event_ids(monkeypatch) -> None:
     received_event_ids: list[str] = []
+    received_sport_mappings: list[object] = []
     monkeypatch.setattr(cli, "Settings", _FakeSettings)
 
     def collect_event_odds(**kwargs: object) -> OddsCollectionResult:
         received_event_ids.extend(kwargs["event_ids"])  # type: ignore[arg-type]
+        received_sport_mappings.append(kwargs["sport_codes_by_event_id"])
         return _result(statuses=["captured", "captured"])
 
     monkeypatch.setattr(cli, "collect_event_odds", collect_event_odds)
@@ -145,6 +147,7 @@ def test_collect_odds_normalizes_event_ids(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert received_event_ids == ["A", "B"]
+    assert received_sport_mappings == [None]
     assert "Odds 수집 상태: completed" in result.output
     assert "Snapshot 저장: 2개" in result.output
 
@@ -243,6 +246,7 @@ def test_collect_upcoming_odds_collects_candidates_selected_by_schedule(
     )
     loaded = LoadedLeagueDiscovery(file_path=path, discovery=discovery)
     received_event_ids: list[str] = []
+    received_sport_mappings: list[object] = []
 
     monkeypatch.setattr(
         cli,
@@ -259,6 +263,7 @@ def test_collect_upcoming_odds_collects_candidates_selected_by_schedule(
 
     def collect_event_odds(**kwargs: object) -> OddsCollectionResult:
         received_event_ids.extend(kwargs["event_ids"])  # type: ignore[arg-type]
+        received_sport_mappings.append(kwargs["sport_codes_by_event_id"])
         return _result(statuses=["captured", "captured"])
 
     monkeypatch.setattr(cli, "collect_event_odds", collect_event_odds)
@@ -278,6 +283,7 @@ def test_collect_upcoming_odds_collects_candidates_selected_by_schedule(
 
     assert result.exit_code == 0
     assert received_event_ids == ["EVENT-A", "EVENT-B"]
+    assert received_sport_mappings == [{"EVENT-A": "baseball", "EVENT-B": "baseball"}]
     assert "Odds 수집 후보 경기: 2개" in result.output
     assert "Odds 수집 상태: completed" in result.output
     assert "Snapshot 저장: 2개" in result.output

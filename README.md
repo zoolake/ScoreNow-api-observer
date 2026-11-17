@@ -468,11 +468,12 @@ uv run observer auto-watch-status
   프로그램이 갱신하는 실행 확인 파일입니다.
 - 수집 중인 경기와 예상 수집 종료 시각을 보여줍니다. 예외 JSON 저장을 재시도하는
   경기는 별도로 표시하고 이 상태에서는 추가 API를 호출하지 않는다고 명시합니다.
-- 명령 실행 시각이 속한 정각 구간의 Event View 요청 수를 축구 전용·야구 전용·혼합·
-  분류 불가로 나눕니다. 예를 들어 14:10 KST에는 14:00 이상 15:00 미만 구간을
-  사용합니다. 혼합·분류 불가 요청은 안전하게 Soccer와 Baseball 양쪽 한도에 포함하여
-  계산합니다. 이 값은 현재 저장소에 기록된 요청만 포함하므로, 같은 API 토큰을 다른
-  프로그램에서도 사용한다면 그 요청은 로컬 집계에 잡히지 않습니다.
+- 명령 실행 시각이 속한 정각 구간의 전체 BETS API 요청 수를 Event View·Upcoming·
+  Event Odds별로 보여주고, 축구 전용·야구 전용·혼합·분류 불가로도 나눕니다. 예를 들어
+  14:10 KST에는 14:00 이상 15:00 미만 구간을 사용합니다. 혼합·분류 불가 요청은
+  안전하게 Soccer와 Baseball 양쪽 한도에 포함하여 계산합니다. 이 값은 현재 저장소에
+  기록된 요청만 포함하므로, 같은 API 토큰을 다른 프로그램에서도 사용한다면 그 요청은
+  로컬 집계에 잡히지 않습니다.
 - 응답에 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` 헤더가
   있었고 `Reset`이 현재 정각 구간의 종료 시각과 일치하면 가장 최근 값을 요청 분류별로
   표시합니다. 축구 전용·야구 전용 값은 각 종목의 참고값으로 사용하고, 혼합·분류 불가
@@ -500,17 +501,26 @@ uv run observer auto-watch-status --all-exceptions
 실행 중 실제 HTTP 요청을 시작하기 전에 다음 경로에 호출 기록을 먼저 만듭니다.
 
 ```text
-data/metrics/event-view-api-requests/{UTC 날짜}/{request_id}.json
+data/metrics/bets-api-requests/{UTC 날짜}/{request_id}.json
 ```
 
 한 파일이 실제 요청 시도 한 번입니다. 요청 완료 후 같은 파일에 HTTP 상태 또는 오류
-유형을 기록합니다. `football_event_id_count`, `baseball_event_id_count` 같은 중복 집계
-필드는 저장하지 않습니다. 대신 요청별 `requested_events`에 이벤트 ID와 종목을 남겨
-필요할 때 다시 계산할 수 있게 합니다. CLI 종료 요약은 축구 전용·야구 전용·혼합·분류
-불가 요청 횟수를 보여줍니다. 이 영속 기록은 `auto-watch`뿐 아니라 공통 Event View
-수집 함수를 사용하는 `collect`, `watch`, `watch-upcoming`에도 생성됩니다. 직접 입력한
-이벤트처럼 종목을 확정할 근거가 없으면 `unknown`으로 기록합니다. 응답에 BETS API의
-`X-RateLimit-*` 헤더가 있으면 같은 요청 파일에 보존합니다.
+유형을 기록합니다. 토큰은 저장하지 않으며 endpoint별로 다음 입력만 보존합니다.
+
+- Event View: 요청 이벤트 ID와 확인 가능한 종목
+- Upcoming: 종목·리그·조회 날짜
+- Event Odds: 이벤트 ID·확인 가능한 종목·배당 마켓
+
+이 영속 기록은 Event View를 사용하는 `collect`, `watch`, `watch-upcoming`, `auto-watch`와
+Upcoming을 사용하는 `discover-upcoming`, Event Odds를 사용하는 `collect-odds`,
+`collect-upcoming-odds`에 모두 생성됩니다. 직접 입력한 이벤트처럼 종목을 확정할 근거가
+없으면 `unknown`으로 기록합니다. `collect-upcoming-odds`는 Discovery의 종목 정보를
+이어받습니다. 응답에 BETS API의 `X-RateLimit-*` 헤더가 있으면 endpoint와 관계없이 같은
+요청 파일에 보존합니다. 요청 시작 기록을 저장하지 못하면 과금될 수 있는 API 호출을
+하지 않습니다.
+
+기존 `data/metrics/event-view-api-requests/...` 기록은 새로 생성하지 않지만,
+`auto-watch-status`가 이전 요청량을 잃지 않도록 계속 읽습니다.
 
 ### `observer collect`
 

@@ -272,7 +272,10 @@ def collect_odds(
     _collect_odds_for_event_ids(requested_event_ids)
 
 
-def _collect_odds_for_event_ids(event_ids: list[str]) -> None:
+def _collect_odds_for_event_ids(
+    event_ids: list[str],
+    sport_codes_by_event_id: dict[str, str] | None = None,
+) -> None:
     """검증된 이벤트 ID마다 Odds를 수집하고 CLI 종료 정책을 적용합니다."""
 
     try:
@@ -291,6 +294,7 @@ def _collect_odds_for_event_ids(event_ids: list[str]) -> None:
             base_url=settings.bets_api_base_url,
             token=settings.bets_api_token.get_secret_value(),
             event_ids=event_ids,
+            sport_codes_by_event_id=sport_codes_by_event_id,
         )
     except (OSError, ValueError, ValidationError) as error:
         typer.echo(f"Odds 수집을 처리하지 못했습니다. {error}", err=True)
@@ -921,8 +925,15 @@ def collect_upcoming_odds(
         _print_upcoming_candidate(index=index, candidate=candidate, now=now)
 
     event_ids = [candidate.event.event_id for candidate in selection.candidates]
+    sport_codes_by_event_id = {
+        candidate.event.event_id: candidate.event.sport_code
+        for candidate in selection.candidates
+    }
     typer.echo("")
-    _collect_odds_for_event_ids(event_ids)
+    _collect_odds_for_event_ids(
+        event_ids,
+        sport_codes_by_event_id=sport_codes_by_event_id,
+    )
 
 
 @app.command()

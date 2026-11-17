@@ -10,6 +10,14 @@ from scorenow_api_observer.bets_api_client import (
     UPCOMING_EVENTS_ENDPOINT,
     get_upcoming_events,
 )
+from scorenow_api_observer.bets_api_request_log import (
+    BETS_API_REQUEST_LOG_DIRECTORY,
+    BetsApiRequestRecord,
+    UpcomingRequestDetails,
+    finish_bets_api_request,
+    parse_rate_limit_headers,
+    start_bets_api_request,
+)
 from scorenow_api_observer.upcoming.models import (
     DiscoveredUpcomingEvent,
     LeagueUpcomingDiscovery,
@@ -48,6 +56,11 @@ class UpcomingCaptureResult:
     metadata: UpcomingCaptureMetadata
     metadata_file_path: Path
     observable_events: list[ObservableUpcomingEvent]
+    api_request_record: BetsApiRequestRecord
+
+
+class UpcomingRequestLogStartError(OSError):
+    """호출 기록을 시작하지 못해 Upcoming API 호출을 생략했음을 나타냅니다."""
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,7 @@ def discover_upcoming_events(
     raw_base_directory: Path = UPCOMING_RAW_DATA_DIRECTORY,
     metadata_base_directory: Path = UPCOMING_METADATA_DIRECTORY,
     discovery_base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
+    request_log_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
 ) -> UpcomingDiscoveryResult:
     """선택된 종목·리그를 조회하고 리그별 결과와 실행 기록을 저장합니다."""
 
@@ -96,6 +110,7 @@ def discover_upcoming_events(
                 now=clock,
                 raw_base_directory=raw_base_directory,
                 metadata_base_directory=metadata_base_directory,
+                request_log_base_directory=request_log_base_directory,
             )
         except httpx.RequestError as error:
             discovery = _failed_league_discovery(
@@ -106,6 +121,16 @@ def discover_upcoming_events(
                 capture_metadata_file_path=None,
                 error_type=type(error).__name__,
                 error_message="API 서버에 연결하지 못했습니다.",
+            )
+        except UpcomingRequestLogStartError as error:
+            discovery = _failed_league_discovery(
+                discovery_run_id=discovery_run_id,
+                target_date=target_date,
+                target=target,
+                completed_at=_require_aware_datetime(clock()),
+                capture_metadata_file_path=None,
+                error_type=type(error).__name__,
+                error_message=f"API 요청 기록 저장에 실패했습니다: {error}",
             )
         except OSError as error:
             discovery = _failed_league_discovery(
@@ -196,15 +221,48 @@ def capture_upcoming_target(
     now: Callable[[], datetime] | None = None,
     raw_base_directory: Path = UPCOMING_RAW_DATA_DIRECTORY,
     metadata_base_directory: Path = UPCOMING_METADATA_DIRECTORY,
+    request_log_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
 ) -> UpcomingCaptureResult:
     """하나의 종목·리그를 조회하고 원문과 CaptureMetadata를 저장합니다."""
 
-    response = get_upcoming_events(
-        base_url=base_url,
-        token=token,
-        sport_id=target.sport_id,
-        league_id=target.league_id,
-        target_date=target_date,
+    try:
+        request_handle = start_bets_api_request(
+            request=UpcomingRequestDetails(
+                sport_id=target.sport_id,
+                sport_code=target.sport_code,
+                league_id=target.league_id,
+                league_label=target.league_label,
+                target_date=target_date,
+            ),
+            requested_at=_utc_now(),
+            base_directory=request_log_base_directory,
+        )
+    except OSError as error:
+        raise UpcomingRequestLogStartError(str(error)) from error
+
+    try:
+        response = get_upcoming_events(
+            base_url=base_url,
+            token=token,
+            sport_id=target.sport_id,
+            league_id=target.league_id,
+            target_date=target_date,
+        )
+    except httpx.RequestError as error:
+        finish_bets_api_request(
+            handle=request_handle,
+            completed_at=_utc_now(),
+            outcome="request_error",
+            error_type=type(error).__name__,
+        )
+        raise
+
+    api_request_record = finish_bets_api_request(
+        handle=request_handle,
+        completed_at=_utc_now(),
+        outcome="completed",
+        http_status_code=response.status_code,
+        rate_limit=parse_rate_limit_headers(response.headers),
     )
     clock = now or _utc_now
     captured_at = _require_aware_datetime(clock())
@@ -271,6 +329,7 @@ def capture_upcoming_target(
         metadata=metadata,
         metadata_file_path=metadata_file_path,
         observable_events=observable_events,
+        api_request_record=api_request_record,
     )
 
 

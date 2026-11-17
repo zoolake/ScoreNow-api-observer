@@ -10,6 +10,13 @@ from scorenow_api_observer.bets_api_client import (
     EVENT_ODDS_ENDPOINT,
     get_event_odds,
 )
+from scorenow_api_observer.bets_api_request_log import (
+    BETS_API_REQUEST_LOG_DIRECTORY,
+    EventOddsRequestDetails,
+    finish_bets_api_request,
+    parse_rate_limit_headers,
+    start_bets_api_request,
+)
 from scorenow_api_observer.event_odds.models import (
     OddsRequestQuery,
     OddsSnapshotMetadata,
@@ -74,8 +81,10 @@ def collect_event_odds(
     event_ids: list[str],
     odds_markets: tuple[int, ...] = DEFAULT_ODDS_MARKETS,
     now: Callable[[], datetime] | None = None,
+    sport_codes_by_event_id: dict[str, str] | None = None,
     raw_base_directory: Path = ODDS_RAW_DATA_DIRECTORY,
     metadata_base_directory: Path = ODDS_METADATA_DIRECTORY,
+    request_log_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
 ) -> OddsCollectionResult:
     """이벤트별 Odds API를 호출하고 성공한 일간 최신 Snapshot을 저장합니다."""
 
@@ -94,9 +103,15 @@ def collect_event_odds(
             token=token,
             event_id=event_id,
             odds_markets=odds_markets,
+            sport_code=(
+                sport_codes_by_event_id.get(event_id)
+                if sport_codes_by_event_id is not None
+                else None
+            ),
             clock=clock,
             raw_base_directory=raw_base_directory,
             metadata_base_directory=metadata_base_directory,
+            request_log_base_directory=request_log_base_directory,
         )
         event_results.append(event_result)
         if snapshot is not None:
@@ -115,10 +130,33 @@ def _collect_event_odds_snapshot(
     token: str,
     event_id: str,
     odds_markets: tuple[int, ...],
+    sport_code: str | None,
     clock: Callable[[], datetime],
     raw_base_directory: Path,
     metadata_base_directory: Path,
+    request_log_base_directory: Path,
 ) -> tuple[OddsCollectionEventResult, CollectedOddsSnapshot | None]:
+    try:
+        request_handle = start_bets_api_request(
+            request=EventOddsRequestDetails(
+                event_id=event_id,
+                sport_code=sport_code,
+                odds_markets=list(odds_markets),
+            ),
+            requested_at=_utc_now(),
+            base_directory=request_log_base_directory,
+        )
+    except OSError as error:
+        return (
+            _failed_event_result(
+                event_id=event_id,
+                status="storage_failed",
+                error_type=type(error).__name__,
+                error_message=f"API 요청 기록 저장에 실패했습니다: {error}",
+            ),
+            None,
+        )
+
     try:
         response = get_event_odds(
             base_url=base_url,
@@ -127,12 +165,51 @@ def _collect_event_odds_snapshot(
             odds_markets=odds_markets,
         )
     except httpx.RequestError as error:
+        try:
+            finish_bets_api_request(
+                handle=request_handle,
+                completed_at=_utc_now(),
+                outcome="request_error",
+                error_type=type(error).__name__,
+            )
+        except OSError as log_error:
+            return (
+                _failed_event_result(
+                    event_id=event_id,
+                    status="storage_failed",
+                    error_type=type(log_error).__name__,
+                    error_message=(
+                        f"API 연결 실패 후 요청 기록 저장에도 실패했습니다: {log_error}"
+                    ),
+                ),
+                None,
+            )
         return (
             _failed_event_result(
                 event_id=event_id,
                 status="request_failed",
                 error_type=type(error).__name__,
                 error_message="API 서버에 연결하지 못했습니다.",
+            ),
+            None,
+        )
+
+    try:
+        finish_bets_api_request(
+            handle=request_handle,
+            completed_at=_utc_now(),
+            outcome="completed",
+            http_status_code=response.status_code,
+            rate_limit=parse_rate_limit_headers(response.headers),
+        )
+    except OSError as error:
+        return (
+            _failed_event_result(
+                event_id=event_id,
+                status="storage_failed",
+                http_status_code=response.status_code,
+                error_type=type(error).__name__,
+                error_message=f"API 응답 후 요청 기록 저장에 실패했습니다: {error}",
             ),
             None,
         )

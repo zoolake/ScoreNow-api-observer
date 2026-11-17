@@ -28,10 +28,15 @@ from scorenow_api_observer.auto_watch.state import (
     AUTO_WATCH_STATE_PATH,
     load_auto_watch_state,
 )
+from scorenow_api_observer.bets_api_request_log import (
+    BETS_API_REQUEST_LOG_DIRECTORY,
+    BetsApiEndpoint,
+    BetsApiRequestRecord,
+    RequestCategory,
+)
 from scorenow_api_observer.event_view.request_log import (
     EVENT_VIEW_REQUEST_LOG_DIRECTORY,
     EventViewApiRequestRecord,
-    RequestCategory,
 )
 
 KST = ZoneInfo("Asia/Seoul")
@@ -41,6 +46,12 @@ REQUEST_CATEGORIES: tuple[RequestCategory, ...] = (
     "mixed",
     "unknown",
 )
+API_ENDPOINTS: tuple[BetsApiEndpoint, ...] = (
+    "/v1/event/view",
+    "/v3/events/upcoming",
+    "/v2/event/odds",
+)
+ApiRequestRecord = BetsApiRequestRecord | EventViewApiRequestRecord
 
 
 @dataclass(frozen=True)
@@ -60,9 +71,9 @@ class StoredAutoWatchException:
 class AutoWatchRequestStatus:
     window_start: datetime
     window_end: datetime
-    current_window_records: list[EventViewApiRequestRecord]
-    daily_records: list[EventViewApiRequestRecord]
-    valid_rate_limit_records: dict[RequestCategory, EventViewApiRequestRecord]
+    current_window_records: list[ApiRequestRecord]
+    daily_records: list[ApiRequestRecord]
+    valid_rate_limit_records: dict[RequestCategory, ApiRequestRecord]
 
     def current_window_category_counts(self) -> dict[RequestCategory, int]:
         counts = Counter(
@@ -73,6 +84,14 @@ class AutoWatchRequestStatus:
     def daily_category_counts(self) -> dict[RequestCategory, int]:
         counts = Counter(record.request_category for record in self.daily_records)
         return {category: counts[category] for category in REQUEST_CATEGORIES}
+
+    def current_window_endpoint_counts(self) -> dict[BetsApiEndpoint, int]:
+        counts = Counter(record.endpoint for record in self.current_window_records)
+        return {endpoint: counts[endpoint] for endpoint in API_ENDPOINTS}
+
+    def daily_endpoint_counts(self) -> dict[BetsApiEndpoint, int]:
+        counts = Counter(record.endpoint for record in self.daily_records)
+        return {endpoint: counts[endpoint] for endpoint in API_ENDPOINTS}
 
 
 @dataclass(frozen=True)
@@ -98,7 +117,8 @@ def build_auto_watch_status_report(
     config_path: Path = AUTO_WATCH_CONFIG_PATH,
     state_path: Path = AUTO_WATCH_STATE_PATH,
     heartbeat_path: Path = AUTO_WATCH_HEARTBEAT_PATH,
-    request_base_directory: Path = EVENT_VIEW_REQUEST_LOG_DIRECTORY,
+    request_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
+    legacy_event_view_request_base_directory: Path = EVENT_VIEW_REQUEST_LOG_DIRECTORY,
     exception_base_directory: Path = AUTO_WATCH_EXCEPTION_DIRECTORY,
 ) -> AutoWatchStatusReport:
     """로컬 파일만 읽어 Auto-watch 상태 보고서 자료를 만듭니다."""
@@ -139,7 +159,26 @@ def build_auto_watch_status_report(
             (window_start_utc, window_end_utc),
         ),
     )
-    request_records = _load_request_records(request_paths, failures=failures)
+    request_records: list[ApiRequestRecord] = []
+    request_records.extend(
+        _load_bets_api_request_records(
+            request_paths,
+            failures=failures,
+        )
+    )
+    legacy_request_paths = _find_request_paths(
+        base_directory=legacy_event_view_request_base_directory,
+        windows=(
+            (day_start_utc, day_end_utc),
+            (window_start_utc, window_end_utc),
+        ),
+    )
+    request_records.extend(
+        _load_legacy_event_view_request_records(
+            legacy_request_paths,
+            failures=failures,
+        )
+    )
     daily_records = [
         record
         for record in request_records
@@ -355,6 +394,7 @@ def _render_active_event(
 
 def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> None:
     current_counts = report.requests.current_window_category_counts()
+    current_endpoint_counts = report.requests.current_window_endpoint_counts()
     current_total = len(report.requests.current_window_records)
     soccer_count = (
         current_counts["football_only"]
@@ -369,7 +409,7 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
     lines.extend(
         [
             "",
-            "[현재 Event View API 요청 제한 구간]",
+            "[현재 BETS API 요청 제한 구간]",
             (
                 "  • KST: "
                 f"{_format_datetime(report.requests.window_start, KST)} ~ "
@@ -381,8 +421,13 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
                 f"{_format_datetime(report.requests.window_end, UTC)}"
             ),
             "",
-            "[현재 구간 Event View 요청]",
+            "[현재 구간 BETS API 요청]",
             f"  • 전체 요청 시도: {current_total}회",
+            (f"  • Event View: {current_endpoint_counts['/v1/event/view']}회"),
+            (f"  • Upcoming: {current_endpoint_counts['/v3/events/upcoming']}회"),
+            (f"  • Event Odds: {current_endpoint_counts['/v2/event/odds']}회"),
+            "",
+            "[현재 구간 종목 분류]",
             f"  • 축구 전용: {current_counts['football_only']}회",
             f"  • 야구 전용: {current_counts['baseball_only']}회",
             f"  • 축구·야구 혼합: {current_counts['mixed']}회",
@@ -443,11 +488,17 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
     _render_rate_limit_records(lines, report)
 
     daily_counts = report.requests.daily_category_counts()
+    daily_endpoint_counts = report.requests.daily_endpoint_counts()
     lines.extend(
         [
             "",
             f"[{report.target_date_kst.isoformat()} KST 누적 요청]",
             f"  • 전체 요청 시도: {len(report.requests.daily_records)}회",
+            f"  • Event View: {daily_endpoint_counts['/v1/event/view']}회",
+            f"  • Upcoming: {daily_endpoint_counts['/v3/events/upcoming']}회",
+            f"  • Event Odds: {daily_endpoint_counts['/v2/event/odds']}회",
+            "",
+            f"[{report.target_date_kst.isoformat()} KST 누적 종목 분류]",
             f"  • 축구 전용: {daily_counts['football_only']}회",
             f"  • 야구 전용: {daily_counts['baseball_only']}회",
             f"  • 혼합: {daily_counts['mixed']}회",
@@ -471,7 +522,11 @@ def _render_rate_limit_records(
         if record is None or record.rate_limit is None:
             continue
         rate_limit = record.rate_limit
-        lines.append(f"  • {_request_category_label(category)} 응답")
+        lines.append(
+            "  • "
+            f"{_request_category_label(category)} / "
+            f"{_endpoint_label(record.endpoint)} 응답"
+        )
         if rate_limit.limit is not None:
             lines.append(f"    시간당 한도: {rate_limit.limit:,}회")
         if rate_limit.remaining is not None:
@@ -605,7 +660,31 @@ def _find_request_paths(
     )
 
 
-def _load_request_records(
+def _load_bets_api_request_records(
+    file_paths: list[Path],
+    *,
+    failures: list[StatusReadFailure],
+) -> list[BetsApiRequestRecord]:
+    records: list[BetsApiRequestRecord] = []
+    for file_path in file_paths:
+        try:
+            records.append(
+                BetsApiRequestRecord.model_validate_json(
+                    file_path.read_text(encoding="utf-8")
+                )
+            )
+        except (OSError, ValueError, ValidationError) as error:
+            failures.append(
+                StatusReadFailure(
+                    area="BETS API 요청 기록",
+                    file_path=file_path,
+                    error_message=str(error),
+                )
+            )
+    return records
+
+
+def _load_legacy_event_view_request_records(
     file_paths: list[Path],
     *,
     failures: list[StatusReadFailure],
@@ -621,7 +700,7 @@ def _load_request_records(
         except (OSError, ValueError, ValidationError) as error:
             failures.append(
                 StatusReadFailure(
-                    area="Event View 요청 기록",
+                    area="기존 Event View 요청 기록",
                     file_path=file_path,
                     error_message=str(error),
                 )
@@ -682,11 +761,11 @@ def _current_hour_window(now: datetime) -> tuple[datetime, datetime]:
 
 
 def _latest_valid_rate_limit_records(
-    records: list[EventViewApiRequestRecord],
+    records: list[ApiRequestRecord],
     *,
     window_end: datetime,
-) -> dict[RequestCategory, EventViewApiRequestRecord]:
-    latest_by_category: dict[RequestCategory, EventViewApiRequestRecord] = {}
+) -> dict[RequestCategory, ApiRequestRecord]:
+    latest_by_category: dict[RequestCategory, ApiRequestRecord] = {}
     for record in records:
         rate_limit = record.rate_limit
         if rate_limit is None or rate_limit.reset_at != window_end:
@@ -699,7 +778,7 @@ def _latest_valid_rate_limit_records(
     return latest_by_category
 
 
-def _request_completion_time(record: EventViewApiRequestRecord) -> datetime:
+def _request_completion_time(record: ApiRequestRecord) -> datetime:
     return record.completed_at or record.requested_at
 
 
@@ -794,6 +873,14 @@ def _request_category_label(category: RequestCategory) -> str:
         "mixed": "축구·야구 혼합",
         "unknown": "종목 분류 불가",
     }[category]
+
+
+def _endpoint_label(endpoint: str) -> str:
+    return {
+        "/v1/event/view": "Event View",
+        "/v3/events/upcoming": "Upcoming",
+        "/v2/event/odds": "Event Odds",
+    }.get(endpoint, endpoint)
 
 
 def _as_utc(value: datetime) -> datetime:
