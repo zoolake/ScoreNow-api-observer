@@ -122,16 +122,21 @@ def test_auto_watch_refresh_scans_only_dates_touched_by_candidate_window(
     now = datetime(2026, 11, 13, 23, 55, tzinfo=UTC)
     state = AutoWatchState(updated_at=now, active_events=[])
     received_target_dates: tuple[date, ...] | None = None
+    received_target_keys: tuple[tuple[str, str, str], ...] | None = None
 
-    def find_paths(*, target_dates):
-        nonlocal received_target_dates
+    def find_paths(*, target_dates, target_keys):
+        nonlocal received_target_dates, received_target_keys
         received_target_dates = target_dates
+        received_target_keys = tuple(target_keys)
         return []
 
     monkeypatch.setattr(
         cli,
         "load_upcoming_targets",
-        lambda: [UpcomingTarget("16", "baseball", "349", "kbo", True)],
+        lambda: [
+            UpcomingTarget("16", "baseball", "349", "kbo", True),
+            UpcomingTarget("1", "football", "6388", "uefa-super-cup", False),
+        ],
     )
     monkeypatch.setattr(cli, "find_league_upcoming_discovery_paths", find_paths)
 
@@ -146,6 +151,7 @@ def test_auto_watch_refresh_scans_only_dates_touched_by_candidate_window(
         now.date(),
         (now + timedelta(days=1)).date(),
     )
+    assert received_target_keys == (("baseball", "349", "kbo"),)
 
 
 def test_auto_watch_detects_new_events_while_running_and_counts_mixed_request(

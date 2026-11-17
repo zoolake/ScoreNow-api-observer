@@ -104,8 +104,9 @@ def find_league_upcoming_discovery_paths(
     base_directory: Path = UPCOMING_DISCOVERY_DIRECTORY,
     *,
     target_dates: Iterable[date] | None = None,
+    target_keys: Iterable[tuple[str, str, str]] | None = None,
 ) -> list[Path]:
-    """지정한 UTC target_date의 리그별 Discovery 경로를 반환합니다."""
+    """지정한 UTC 날짜와 종목·리그에 해당하는 Discovery 경로를 반환합니다."""
 
     date_directories = (
         [
@@ -115,10 +116,27 @@ def find_league_upcoming_discovery_paths(
         if target_dates is not None
         else [path for path in base_directory.glob("*") if path.is_dir()]
     )
+    normalized_target_keys = (
+        sorted(set(target_keys)) if target_keys is not None else None
+    )
+    league_directories = (
+        [
+            date_directory / "leagues" / sport_code / f"{league_id}-{league_label}"
+            for date_directory in date_directories
+            for sport_code, league_id, league_label in normalized_target_keys
+        ]
+        if normalized_target_keys is not None
+        else [
+            league_directory
+            for date_directory in date_directories
+            for league_directory in date_directory.glob("leagues/*/*")
+            if league_directory.is_dir()
+        ]
+    )
     return sorted(
         path
-        for date_directory in date_directories
-        for path in date_directory.glob("leagues/*/*/*_discovery.json")
+        for league_directory in league_directories
+        for path in league_directory.glob("*_discovery.json")
         if path.is_file()
     )
 

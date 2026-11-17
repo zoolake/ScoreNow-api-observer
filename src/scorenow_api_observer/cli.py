@@ -1569,7 +1569,17 @@ def _refresh_auto_watch_candidates(
         now=now,
         within_minutes=within_minutes,
     )
-    discovery_paths = find_league_upcoming_discovery_paths(target_dates=target_dates)
+    discovery_paths = find_league_upcoming_discovery_paths(
+        target_dates=target_dates,
+        target_keys=(
+            (
+                target.sport_code,
+                target.league_id,
+                target.league_label,
+            )
+            for target in enabled_targets
+        ),
+    )
     latest_discoveries = resolve_latest_league_discoveries(discovery_paths)
     _print_upcoming_discovery_warnings(latest_discoveries)
 

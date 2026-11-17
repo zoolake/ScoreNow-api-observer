@@ -226,3 +226,41 @@ def test_find_league_upcoming_discoveries_limits_target_dates(
 
     assert result == [current_path, next_path]
     assert past_path not in result
+
+
+def test_find_league_upcoming_discoveries_limits_target_leagues(
+    tmp_path: Path,
+) -> None:
+    discovery = LeagueUpcomingDiscovery(
+        discovery_run_id="2026-11-13T01-00-00_KST",
+        status="completed",
+        completed_at=datetime(2026, 11, 12, 16, 1, tzinfo=UTC),
+        target_date=date(2026, 11, 13),
+        target=_target(),
+        capture_metadata_file_path="data/metadata/capture.json",
+        events=[],
+        failure=None,
+    )
+    enabled_path = save_league_upcoming_discovery(discovery, base_directory=tmp_path)
+    disabled_path = save_league_upcoming_discovery(
+        discovery.model_copy(
+            update={
+                "target": UpcomingDiscoveryTarget(
+                    sport_id="1",
+                    sport_code="football",
+                    league_id="6388",
+                    league_label="uefa-super-cup",
+                )
+            }
+        ),
+        base_directory=tmp_path,
+    )
+
+    result = find_league_upcoming_discovery_paths(
+        tmp_path,
+        target_dates=(date(2026, 11, 13),),
+        target_keys=(("baseball", "225", "mlb"),),
+    )
+
+    assert result == [enabled_path]
+    assert disabled_path not in result

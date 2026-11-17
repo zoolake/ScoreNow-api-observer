@@ -384,7 +384,9 @@ uv run observer auto-watch \
 - 매 후보 확인 때 Discovery 파일 목록과 설정을 새로 읽으므로, 실행 중 별도의
   `discover-upcoming`이 저장한 새 예정 경기도 감지할 수 있습니다.
 - 매번 전체 과거 이력을 읽지 않고 `now`부터 `now + within_minutes`까지 걸치는 UTC
-  날짜 디렉터리만 읽습니다. UTC 자정을 넘는 후보 범위는 두 날짜를 모두 확인합니다.
+  날짜 디렉터리와 `auto_watch_enabled: true`인 리그의 Discovery만 읽습니다. UTC
+  자정을 넘는 후보 범위는 두 날짜를 모두 확인합니다. 비활성 리그의 과거 수집 실패는
+  Auto-watch 경고에 포함하지 않습니다.
 - Upcoming API를 직접 호출하지 않습니다. `discover-upcoming` 자동 실행은 이 단계에
   포함되지 않으므로 cron, 클라우드 스케줄러 또는 수동 명령으로 별도 실행해야 합니다.
 - 상태별 관찰 정책은 실행 시작 시 `config/auto_watch.yaml`에서 읽습니다. 실행 중

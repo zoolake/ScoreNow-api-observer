@@ -195,8 +195,9 @@ cli.auto_watch(within_minutes, interval, candidate_check_interval, max_cycles)
     ├── 후보 확인 시각이 되면 매번
     │   ├── 설정 파일 다시 로드
     │   ├── upcoming.candidates.candidate_target_dates(...)
-    │   ├── upcoming.storage.find_league_upcoming_discovery_paths(target_dates=...)
-    │   │   └── 후보 시간 범위가 걸치는 UTC 날짜 디렉터리만 탐색
+    │   ├── upcoming.storage.find_league_upcoming_discovery_paths(
+    │   │       target_dates=..., target_keys=활성 리그)
+    │   │   └── 후보 UTC 날짜 안에서 auto_watch_enabled=true인 리그만 탐색
     │   ├── upcoming.candidates.resolve_latest_league_discoveries(...)
     │   ├── upcoming.candidates.select_upcoming_candidates(...)
     │   └── auto_watch.state.add_auto_watch_candidates(...)
