@@ -5,10 +5,15 @@ from typing import cast
 
 import httpx
 import pytest
+from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
 from scorenow_api_observer.auto_watch import state as state_storage
 from scorenow_api_observer.auto_watch.config import load_auto_watch_config
+from scorenow_api_observer.auto_watch.lock import (
+    AutoWatchAlreadyRunningError,
+    AutoWatchLockMetadata,
+)
 from scorenow_api_observer.auto_watch.models import (
     AutoWatchActiveEvent,
     AutoWatchState,
@@ -91,7 +96,48 @@ def test_auto_watch_start_summary_is_grouped_and_readable(
     assert "  • Event View 수집 간격: 300초" in output
     assert "  • 실행 횟수 제한: 제한 없음" in output
     assert "[저장 파일]" in output
+    assert "중복 실행 잠금: data/state/auto-watch/auto-watch.lock" in output
     assert "저장된 Discovery만 확인합니다" in output
+
+
+def test_auto_watch_lock_conflict_exits_before_initialization(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    started_at = datetime(2026, 11, 17, 1, tzinfo=UTC)
+    lock_error = AutoWatchAlreadyRunningError(
+        file_path=tmp_path / "auto-watch.lock",
+        metadata=AutoWatchLockMetadata(
+            process_id=1234,
+            started_at=started_at,
+            host_name="oracle-vm",
+        ),
+    )
+
+    def reject_second_process(**_kwargs):
+        raise lock_error
+
+    def fail_if_initialization_starts():
+        raise AssertionError("중복 실행에서는 초기화를 시작하면 안 됩니다.")
+
+    monkeypatch.setattr(
+        cli,
+        "acquire_auto_watch_process_lock",
+        reject_second_process,
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_upcoming_targets",
+        fail_if_initialization_starts,
+    )
+
+    result = CliRunner().invoke(cli.app, ["auto-watch"])
+
+    assert result.exit_code == 1
+    assert "Auto-watch가 이미 실행 중입니다" in result.output
+    assert "프로세스 ID: 1234" in result.output
+    assert "시작 시각: 2026-11-17 10:00:00 KST" in result.output
+    assert "실행 호스트: oracle-vm" in result.output
 
 
 def test_auto_watch_candidate_summary_uses_multiple_lines(

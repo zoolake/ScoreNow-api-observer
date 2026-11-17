@@ -180,48 +180,52 @@ StructureChangeRecord이므로 별도의 `watch-upcoming` 저장 형식은 없�
 
 ```text
 cli.auto_watch(within_minutes, interval, candidate_check_interval, max_cycles)
-├── upcoming.targets.load_upcoming_targets(...)
-├── upcoming.targets.select_auto_watch_targets(...)
-│   └── auto_watch_enabled=true인 리그만 새 후보 대상으로 선택
-├── auto_watch.config.load_auto_watch_config(...)
-│   └── config/auto_watch.yaml의 상태 그룹·관찰 상한 검증
-├── settings.Settings()
-├── auto_watch.state.load_auto_watch_state(...)
-│   └── 없으면 빈 상태를 만들고 즉시 저장
-├── auto_watch.heartbeat.new_auto_watch_heartbeat(...)
-│   └── 시작 시각·수집 간격·프로세스 ID를 원자적으로 저장
-└── cli._run_auto_watch(...)
-    ├── 매 처리 주기 시작에 Heartbeat의 last_cycle_at 갱신
-    ├── 후보 확인 시각이 되면 매번
-    │   ├── 설정 파일 다시 로드
-    │   ├── upcoming.candidates.candidate_target_dates(...)
-    │   ├── upcoming.storage.find_league_upcoming_discovery_paths(
-    │   │       target_dates=..., target_keys=활성 리그)
-    │   │   └── 후보 UTC 날짜 안에서 auto_watch_enabled=true인 리그만 탐색
-    │   ├── upcoming.candidates.resolve_latest_league_discoveries(...)
-    │   ├── upcoming.candidates.select_upcoming_candidates(...)
-    │   └── auto_watch.state.add_auto_watch_candidates(...)
-    ├── auto_watch.policy.find_due_auto_watch_events(...)
-    │   ├── time_status=3 감지 후 15분이면 정상 완료
-    │   └── 그 밖의 상태는 그룹별 관찰 상한 적용
-    ├── 중단 대상이 있으면
-    │   ├── auto_watch.state.mark_auto_watch_stop_decisions(...)
-    │   │   └── stopped_at을 상태 파일에 먼저 고정
-    │   ├── 3이 아니면 auto_watch.exceptions.save_auto_watch_exception_record(...)
-    │   └── 저장 성공 이벤트만 auto_watch.state.remove_auto_watch_events(...)
-    ├── 활성 이벤트를 최대 10개씩 매 주기 다시 배치
-    ├── 배치마다 cli._capture_auto_watch_batch(...)
-    │   ├── event_view.request_log.start_event_view_api_request(...)
-    │   │   └── HTTP 호출 전에 요청 ID·이벤트·종목·호출 분류 저장
-    │   ├── event_view.collector.capture_event_view(...)
-    │   ├── event_view.request_log.finish_event_view_api_request(...)
-    │   │   └── 같은 파일에 HTTP 상태 또는 오류 유형을 원자적으로 반영
-    │   ├── 성공 Observation 구조 비교
-    │   └── 401·402·403·429면 전체 자동 수집 중단
-    ├── cli._update_auto_watch_states(...)
-    │   └── 상태 그룹·최초 감지 시각·마지막 CaptureMetadata 경로 반영
-    ├── 상태가 바뀔 때 auto_watch.state.save_auto_watch_state(...)
-    └── 정상 중단·실패 상태를 Heartbeat에 저장
+├── auto_watch.lock.acquire_auto_watch_process_lock(...)
+│   ├── 운영체제 비차단 단독 잠금 획득
+│   └── 이미 잠겨 있으면 초기화·API 호출 전 종료 코드 1
+└── cli._start_auto_watch(...)
+    ├── upcoming.targets.load_upcoming_targets(...)
+    ├── upcoming.targets.select_auto_watch_targets(...)
+    │   └── auto_watch_enabled=true인 리그만 새 후보 대상으로 선택
+    ├── auto_watch.config.load_auto_watch_config(...)
+    │   └── config/auto_watch.yaml의 상태 그룹·관찰 상한 검증
+    ├── settings.Settings()
+    ├── auto_watch.state.load_auto_watch_state(...)
+    │   └── 없으면 빈 상태를 만들고 즉시 저장
+    ├── auto_watch.heartbeat.new_auto_watch_heartbeat(...)
+    │   └── 시작 시각·수집 간격·프로세스 ID를 원자적으로 저장
+    └── cli._run_auto_watch(...)
+        ├── 매 처리 주기 시작에 Heartbeat의 last_cycle_at 갱신
+        ├── 후보 확인 시각이 되면 매번
+        │   ├── 설정 파일 다시 로드
+        │   ├── upcoming.candidates.candidate_target_dates(...)
+        │   ├── upcoming.storage.find_league_upcoming_discovery_paths(
+        │   │       target_dates=..., target_keys=활성 리그)
+        │   │   └── 후보 UTC 날짜 안에서 auto_watch_enabled=true인 리그만 탐색
+        │   ├── upcoming.candidates.resolve_latest_league_discoveries(...)
+        │   ├── upcoming.candidates.select_upcoming_candidates(...)
+        │   └── auto_watch.state.add_auto_watch_candidates(...)
+        ├── auto_watch.policy.find_due_auto_watch_events(...)
+        │   ├── time_status=3 감지 후 15분이면 정상 완료
+        │   └── 그 밖의 상태는 그룹별 관찰 상한 적용
+        ├── 중단 대상이 있으면
+        │   ├── auto_watch.state.mark_auto_watch_stop_decisions(...)
+        │   │   └── stopped_at을 상태 파일에 먼저 고정
+        │   ├── 3이 아니면 auto_watch.exceptions.save_auto_watch_exception_record(...)
+        │   └── 저장 성공 이벤트만 auto_watch.state.remove_auto_watch_events(...)
+        ├── 활성 이벤트를 최대 10개씩 매 주기 다시 배치
+        ├── 배치마다 cli._capture_auto_watch_batch(...)
+        │   ├── event_view.request_log.start_event_view_api_request(...)
+        │   │   └── HTTP 호출 전에 요청 ID·이벤트·종목·호출 분류 저장
+        │   ├── event_view.collector.capture_event_view(...)
+        │   ├── event_view.request_log.finish_event_view_api_request(...)
+        │   │   └── 같은 파일에 HTTP 상태 또는 오류 유형을 원자적으로 반영
+        │   ├── 성공 Observation 구조 비교
+        │   └── 401·402·403·429면 전체 자동 수집 중단
+        ├── cli._update_auto_watch_states(...)
+        │   └── 상태 그룹·최초 감지 시각·마지막 CaptureMetadata 경로 반영
+        ├── 상태가 바뀔 때 auto_watch.state.save_auto_watch_state(...)
+        └── 정상 중단·실패 상태를 Heartbeat에 저장
 ```
 
 ```text
@@ -233,6 +237,7 @@ data/discoveries/events-upcoming
           ▼
       auto-watch ──────► Event View Capture·Observation·구조 변화
           │
+          ├────────────► data/state/auto-watch/auto-watch.lock
           ├────────────► data/state/auto-watch/state.json
           ├────────────► data/state/auto-watch/heartbeat.json
           ├────────────► data/exceptions/auto-watch/time-status-*/...
@@ -257,6 +262,12 @@ API 요청 기록도 실제 HTTP
 아니라 프로세스가 마지막으로 처리 주기를 시작한 시각과 정상·실패 종료 여부만
 기록합니다.
 
+`auto-watch.lock`은 같은 데이터 디렉터리를 사용하는 Auto-watch 프로세스 하나만
+운영체제 단독 잠금을 갖도록 합니다. 잠금 파일은 고정된 경로에 유지하고 삭제하지
+않습니다. 정상·오류 종료에서는 파일 설명자를 닫아 잠금을 해제하며, 강제 종료나 VM
+재부팅에서는 운영체제가 자동으로 해제합니다. 잠금을 얻지 못한 두 번째 프로세스는
+설정·상태·Heartbeat를 읽거나 유료 API를 호출하기 전에 종료합니다.
+
 `AutoWatchCollectionMode`는 응답 상태에 따른 수집 처리 방식을 나타냅니다.
 `inplay`는 1, `ended`는 3, `waiting_to_start`는 0·2,
 `temporarily_stopped`는 7·10, `closing`은 4·5·6·8·9·11·12·99에 대응하며,
@@ -271,9 +282,9 @@ API 요청 기록도 실제 HTTP
 시각 이후 2시간, `7·10`은 연속 2시간, `4·5·6·8·9·11·12·99`는 15분까지
 관찰합니다. 설정에 없는 값은 연속 1시간 관찰한 뒤 예외 기록 대상으로 처리합니다.
 
-1단계는 상태 파일을 공유하는 단일 `auto-watch` 프로세스를 전제로 합니다. 같은
-저장소에서 여러 프로세스를 동시에 실행할 때의 잠금과 리더 선출은 아직 구현하지
-않았습니다.
+1단계의 잠금은 동일한 macOS·Linux 파일 시스템과 데이터 디렉터리를 사용하는
+프로세스를 대상으로 합니다. 여러 VM 사이의 분산 잠금과 리더 선출은 포함하지
+않습니다.
 
 ## `auto-watch-status` 호출 트리
 
@@ -608,6 +619,7 @@ data/
 ├── observations/event-view/{event_id}/{capture_file}
 ├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
 ├── metrics/event-view-api-requests/{UTC 요청 날짜}/{request_id}.json
+├── state/auto-watch/auto-watch.lock
 ├── state/auto-watch/state.json
 ├── state/auto-watch/heartbeat.json
 ├── exceptions/auto-watch/time-status-{값}/{UTC stopped_at 날짜}/
@@ -635,6 +647,7 @@ data/
 | `UpcomingDiscoveryRun` | 한 CLI 실행의 대상과 리그별 Discovery 경로 | 포함하지 않음 |
 | `OddsSnapshotMetadata` | 이벤트별 일간 최신 Odds 원문의 요청·응답 정보 | 포함하지 않음 |
 | `AutoWatchState` | 재시작할 활성 이벤트와 상태별 관찰·중단 결정 시각 | 포함하지 않음 |
+| `AutoWatchLockMetadata` | 잠금을 보유한 프로세스 ID·시작 시각·호스트 | 포함하지 않음 |
 | `AutoWatchHeartbeat` | Auto-watch 프로세스의 시작·최근 처리·종료 상태 | 포함하지 않음 |
 | `AutoWatchExceptionRecord` | 정상 종료 외 상태로 관찰 상한에 도달한 이벤트 | 원문 대신 상태·출처 경로 포함 |
 | `EventViewApiRequestRecord` | Event View 요청 한 번의 종목 조합·결과·응답 요청 한도 | 포함하지 않음 |
@@ -647,6 +660,7 @@ data/
 | `auto_watch/config.py` | `load_auto_watch_config`, `AutoWatchConfig` | 상태 그룹과 관찰 상한 설정 검증 |
 | `auto_watch/policy.py` | `apply_auto_watch_time_status`, `find_due_auto_watch_events` | 상태 전이와 수집 종료 시각 판정 |
 | `auto_watch/exceptions.py` | `build_auto_watch_exception_record`, `save_auto_watch_exception_record` | 상태값·UTC 중단 시각별 예외 기록 저장 |
+| `auto_watch/lock.py` | `acquire_auto_watch_process_lock`, `AutoWatchProcessLock` | 동일 데이터 디렉터리의 Auto-watch 단일 실행 보장 |
 | `auto_watch/heartbeat.py` | `new_auto_watch_heartbeat`, `touch_auto_watch_heartbeat`, `finish_auto_watch_heartbeat` | 프로세스 시작·최근 처리·종료 상태 저장 |
 | `auto_watch/status.py` | `build_auto_watch_status_report`, `render_auto_watch_status` | 로컬 실행·요청량·예외 상태 부분 성공 조회 |
 | `auto_watch/state.py` | `load_auto_watch_state`, `save_auto_watch_state`, `add_auto_watch_candidates`, `mark_auto_watch_stop_decisions`, `remove_auto_watch_events` | 활성 이벤트의 재시작 복구와 중단 처리 |

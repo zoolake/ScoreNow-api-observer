@@ -27,6 +27,11 @@ from scorenow_api_observer.auto_watch.heartbeat import (
     save_auto_watch_heartbeat,
     touch_auto_watch_heartbeat,
 )
+from scorenow_api_observer.auto_watch.lock import (
+    AUTO_WATCH_LOCK_PATH,
+    AutoWatchAlreadyRunningError,
+    acquire_auto_watch_process_lock,
+)
 from scorenow_api_observer.auto_watch.models import AutoWatchState
 from scorenow_api_observer.auto_watch.policy import (
     AutoWatchStatusUpdate,
@@ -714,6 +719,38 @@ def auto_watch(
     """활성화된 리그의 저장된 Upcoming 후보를 지속적으로 자동 수집합니다."""
 
     try:
+        process_lock = acquire_auto_watch_process_lock(now=_utc_now())
+    except AutoWatchAlreadyRunningError as error:
+        _print_auto_watch_lock_conflict(error)
+        raise typer.Exit(code=1) from None
+    except OSError as error:
+        typer.echo(
+            f"Auto-watch 중복 실행 잠금을 준비하지 못했습니다. {error}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+
+    try:
+        _start_auto_watch(
+            within_minutes=within_minutes,
+            interval_seconds=interval_seconds,
+            candidate_check_interval_seconds=candidate_check_interval_seconds,
+            max_cycles=max_cycles,
+        )
+    finally:
+        process_lock.release()
+
+
+def _start_auto_watch(
+    *,
+    within_minutes: int,
+    interval_seconds: int,
+    candidate_check_interval_seconds: int,
+    max_cycles: int | None,
+) -> None:
+    """잠금을 획득한 단일 프로세스에서 Auto-watch를 초기화하고 실행합니다."""
+
+    try:
         configured_targets = load_upcoming_targets()
         enabled_targets = select_auto_watch_targets(configured_targets)
     except (OSError, ValueError) as error:
@@ -782,6 +819,20 @@ def auto_watch(
     )
     if not completed:
         raise typer.Exit(code=1)
+
+
+def _print_auto_watch_lock_conflict(error: AutoWatchAlreadyRunningError) -> None:
+    typer.echo("⛔ Auto-watch가 이미 실행 중입니다.", err=True)
+    typer.echo("", err=True)
+    typer.echo(f"  • 잠금 파일: {error.file_path}", err=True)
+    metadata = error.metadata
+    if metadata is None:
+        typer.echo("  • 기존 실행 정보를 읽을 수 없습니다.", err=True)
+        return
+    started_at_kst = metadata.started_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+    typer.echo(f"  • 프로세스 ID: {metadata.process_id}", err=True)
+    typer.echo(f"  • 시작 시각: {started_at_kst} KST", err=True)
+    typer.echo(f"  • 실행 호스트: {metadata.host_name}", err=True)
 
 
 @app.command("collect-upcoming-odds")
@@ -1258,6 +1309,7 @@ def _print_auto_watch_start_summary(
     typer.echo(f"  • 실행 횟수 제한: {max_cycles_description}")
     typer.echo("")
     typer.echo("[저장 파일]")
+    typer.echo(f"  • 중복 실행 잠금: {AUTO_WATCH_LOCK_PATH}")
     typer.echo(f"  • 상태 파일: {AUTO_WATCH_STATE_PATH}")
     typer.echo(f"  • 상태 정책: {AUTO_WATCH_CONFIG_PATH}")
     typer.echo("")
