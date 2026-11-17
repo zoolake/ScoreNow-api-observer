@@ -130,6 +130,11 @@ from scorenow_api_observer.reporting.tracked_field_config import (
 )
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.sport_config import load_sport_codes_by_id
+from scorenow_api_observer.upcoming.auto_discovery import (
+    AutoWatchDiscoveryPlan,
+    build_auto_watch_discovery_plan,
+    find_fatal_http_status_code,
+)
 from scorenow_api_observer.upcoming.candidates import (
     InvalidUpcomingCandidateFilterError,
     LatestLeagueDiscoveries,
@@ -140,7 +145,10 @@ from scorenow_api_observer.upcoming.candidates import (
     resolve_latest_league_discoveries,
     select_upcoming_candidates,
 )
-from scorenow_api_observer.upcoming.discovery import discover_upcoming_events
+from scorenow_api_observer.upcoming.discovery import (
+    UpcomingDiscoveryResult,
+    discover_upcoming_events,
+)
 from scorenow_api_observer.upcoming.storage import (
     find_league_upcoming_discovery_paths,
 )
@@ -434,6 +442,193 @@ def discover_upcoming(
     elif discovery_run.status == "failed":
         typer.echo("예정 경기 조회에 모두 실패했습니다.", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("discover-auto-watch")
+def discover_auto_watch(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="활성 리그와 예상 호출만 표시하고 API 호출·파일 저장은 생략",
+    ),
+) -> None:
+    """활성 리그의 UTC 오늘·내일 예정 경기를 자동으로 조회합니다."""
+
+    try:
+        configured_targets = load_upcoming_targets()
+        plan = build_auto_watch_discovery_plan(
+            now=_utc_now(),
+            configured_targets=configured_targets,
+        )
+    except (OSError, ValueError) as error:
+        typer.echo(f"Upcoming 조회 대상 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    _print_auto_watch_discovery_plan(plan, show_targets=dry_run)
+    if dry_run:
+        typer.echo("")
+        typer.echo("ℹ️ Dry-run이므로 API를 호출하거나 파일을 저장하지 않습니다.")
+        return
+    if not plan.targets:
+        typer.echo("")
+        typer.echo("ℹ️ Auto-watch가 활성화된 리그가 없어 조회를 종료합니다.")
+        return
+
+    try:
+        settings = Settings()  # pyright: ignore[reportCallIssue]
+    except ValidationError as error:
+        typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    results: list[UpcomingDiscoveryResult] = []
+    for target_date in plan.target_dates:
+        typer.echo("")
+        typer.echo(f"[🔎 UTC {target_date.isoformat()} Discovery]")
+        try:
+            result = discover_upcoming_events(
+                base_url=settings.bets_api_base_url,
+                token=settings.bets_api_token.get_secret_value(),
+                target_date=target_date,
+                targets=list(plan.targets),
+            )
+        except (OSError, ValueError, ValidationError) as error:
+            typer.echo(
+                f"❌ Upcoming Discovery 저장에 실패했습니다. {error}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+
+        results.append(result)
+        _print_auto_watch_discovery_date_result(result)
+
+        fatal_status_code = find_fatal_http_status_code(result)
+        if fatal_status_code is None:
+            continue
+        typer.echo("")
+        typer.echo(
+            f"⛔ HTTP {fatal_status_code} 오류로 남은 자동 Discovery 호출을 "
+            "중단합니다.",
+            err=True,
+        )
+        skipped_dates = plan.target_dates[len(results) :]
+        if skipped_dates:
+            typer.echo(
+                "  • 조회하지 않은 UTC 날짜: "
+                + ", ".join(item.isoformat() for item in skipped_dates),
+                err=True,
+            )
+        break
+
+    usable_result_count = sum(result.run.status != "failed" for result in results)
+    _print_auto_watch_discovery_summary(plan=plan, results=results)
+
+    if usable_result_count == 0:
+        raise typer.Exit(code=1)
+
+
+def _print_auto_watch_discovery_plan(
+    plan: AutoWatchDiscoveryPlan,
+    *,
+    show_targets: bool,
+) -> None:
+    typer.echo("🤖 Auto-watch Discovery 계획")
+    typer.echo(f"  • 기준 시각(UTC): {plan.planned_at.isoformat()}")
+    typer.echo(f"  • 기준 시각(KST): {plan.planned_at.astimezone(KST).isoformat()}")
+    typer.echo(
+        "  • 조회할 UTC 날짜: "
+        + ", ".join(target_date.isoformat() for target_date in plan.target_dates)
+    )
+    typer.echo(f"  • 활성 리그: {len(plan.targets)}개")
+    typer.echo(f"  • 예상 Upcoming API 호출: {plan.expected_request_count}회")
+    if not show_targets or not plan.targets:
+        return
+    typer.echo("")
+    typer.echo("[활성 리그]")
+    for target in plan.targets:
+        typer.echo(
+            f"  • {target.sport_code}/{target.league_label} "
+            f"(sport_id={target.sport_id}, league_id={target.league_id})"
+        )
+
+
+def _print_auto_watch_discovery_date_result(
+    result: UpcomingDiscoveryResult,
+) -> None:
+    discovery_run = result.run
+    league_discoveries = result.league_discoveries
+    captures = result.captures
+    failures = [
+        discovery.failure
+        for discovery in league_discoveries
+        if discovery.failure is not None
+    ]
+    event_count = sum(len(discovery.events) for discovery in league_discoveries)
+    typer.echo(f"  • 상태: {discovery_run.status}")
+    typer.echo(f"  • Capture 저장: {len(captures)}개")
+    typer.echo(f"  • 예정 경기: {event_count}개")
+    typer.echo(f"  • 처리 실패: {len(failures)}개")
+    typer.echo(f"  • Run 저장 위치: {result.run_file_path}")
+    for failure in failures:
+        typer.echo(
+            f"  ⚠️ [{failure.league_label}] {failure.error_type}: "
+            f"{failure.error_message}",
+            err=True,
+        )
+
+
+def _print_auto_watch_discovery_summary(
+    *,
+    plan: AutoWatchDiscoveryPlan,
+    results: list[UpcomingDiscoveryResult],
+) -> None:
+    processed_results = tuple(zip(plan.target_dates, results, strict=False))
+    completed_dates = [
+        target_date
+        for target_date, result in processed_results
+        if result.run.status == "completed"
+    ]
+    partial_dates = [
+        target_date
+        for target_date, result in processed_results
+        if result.run.status == "partial"
+    ]
+    failed_dates = [
+        target_date
+        for target_date, result in processed_results
+        if result.run.status == "failed"
+    ]
+    skipped_dates = list(plan.target_dates[len(results) :])
+
+    typer.echo("")
+    if len(completed_dates) == len(plan.target_dates):
+        typer.echo("✅ Auto-watch Discovery 완료")
+        typer.echo(
+            "  • UTC "
+            + _format_dates(completed_dates)
+            + "의 예정 경기 조회에 성공했습니다."
+        )
+        return
+
+    if completed_dates or partial_dates:
+        typer.echo("⚠️ Auto-watch Discovery 부분 완료", err=True)
+    else:
+        typer.echo("❌ Auto-watch Discovery 실패", err=True)
+    _print_discovery_dates("조회 성공", completed_dates)
+    _print_discovery_dates("부분 결과 사용 가능", partial_dates)
+    _print_discovery_dates("조회 실패", failed_dates)
+    _print_discovery_dates("오류로 미조회", skipped_dates)
+
+
+def _print_discovery_dates(label: str, target_dates: list[date]) -> None:
+    if target_dates:
+        typer.echo(
+            f"  • {label}(UTC): {_format_dates(target_dates)}",
+            err=True,
+        )
+
+
+def _format_dates(target_dates: list[date]) -> str:
+    return ", ".join(target_date.isoformat() for target_date in target_dates)
 
 
 @app.command("upcoming-candidates")

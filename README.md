@@ -70,7 +70,8 @@ targets:
 
 `auto_watch_enabled`는 `auto-watch`가 자동 수집 후보로 사용할 리그인지 나타냅니다.
 시즌이 진행 중인 리그만 `true`로 관리합니다. 필드를 생략하면 안전하게 `false`로
-해석합니다. 이 값은 `discover-upcoming`의 직접 조회 대상에는 영향을 주지 않습니다.
+해석합니다. `discover-auto-watch`도 이 값이 `true`인 리그만 자동 조회합니다. 이 값은
+`discover-upcoming`의 직접 조회 대상에는 영향을 주지 않습니다.
 
 ### 5. 예정 경기 탐색
 
@@ -80,6 +81,14 @@ BETS API의 `day` 파라미터가 UTC 날짜이므로 한국에서 10월 17일 �
 
 ```bash
 uv run observer discover-upcoming --target-date 2026-10-16
+```
+
+Auto-watch용 활성 리그의 UTC 오늘·내일을 자동 선택하려면 먼저 Dry-run으로 대상을
+확인한 뒤 실제 Discovery를 실행합니다.
+
+```bash
+uv run observer discover-auto-watch --dry-run
+uv run observer discover-auto-watch
 ```
 
 생성된 리그별 Discovery JSON의 `events`에서 `event_id`, UTC·KST 예정 시각, 리그와
@@ -127,8 +136,8 @@ uv run observer watch-upcoming \
 ### 8. 저장된 Discovery를 계속 확인하며 자동 수집
 
 `auto-watch`는 `auto_watch_enabled: true`인 리그의 저장된 Discovery를 주기적으로 다시
-읽습니다. 실행 중 별도의 `discover-upcoming` 명령이 새 경기를 저장해도 다음 후보 확인
-때 자동 수집 대상에 추가합니다.
+읽습니다. 실행 중 `discover-auto-watch`나 `discover-upcoming`이 새 경기를 저장해도 다음
+후보 확인 때 자동 수집 대상에 추가합니다.
 
 ```bash
 uv run observer auto-watch
@@ -137,7 +146,7 @@ uv run observer auto-watch
 기본값은 경기 시작 10분 전부터 후보에 추가하고, Discovery 후보는 5분마다 다시
 확인하며, 활성 경기는 30초마다 Event View로 수집합니다. `auto-watch` 자체는 Upcoming
 API를 호출하지 않으므로 새로운 Discovery를 만들려면 별도 명령이나 외부 스케줄러에서
-`discover-upcoming`을 실행해야 합니다.
+`discover-auto-watch`를 실행해야 합니다.
 
 활성 이벤트와 상태별 관찰 시작·중단 결정 시각은
 `data/state/auto-watch/state.json`에 저장됩니다. 프로세스를 다시 시작하면 이 파일에서
@@ -257,6 +266,31 @@ uv run observer discover-upcoming --target-date 2026-10-16
 - 설정 또는 날짜 입력 오류는 API를 호출하지 않고 종료 코드 `2`로 끝납니다.
 - 페이징 호출은 수행하지 않습니다. 응답의 `pager.total`이 현재 `results` 개수보다
   크면 `pagination_required` 이슈와 `partial` 상태로 기록합니다.
+
+### `observer discover-auto-watch`
+
+설정에서 `auto_watch_enabled: true`인 리그를 선택하여 명령 시작 시각 기준 UTC 오늘과
+내일의 Upcoming Discovery를 차례로 실행합니다.
+
+```bash
+uv run observer discover-auto-watch --dry-run
+uv run observer discover-auto-watch
+```
+
+- `--dry-run`은 기준 시각, UTC 조회 날짜, 활성 리그와 예상 API 호출 횟수를 표시합니다.
+  API 설정·토큰을 읽지 않고 API 호출과 파일 저장도 하지 않습니다.
+- 예상 최대 호출 횟수는 `활성 리그 수 × 2일`입니다.
+- 실제 실행은 기존 Upcoming 원문·CaptureMetadata·리그 Discovery·날짜별 Run 저장
+  구조와 공통 BETS API 요청 기록을 그대로 사용합니다.
+- 일반적인 연결·HTTP 오류는 즉시 재시도하지 않고 기존 Discovery 정책에 따라 다음
+  대상을 처리합니다.
+- HTTP 401·402·403·429가 반환되면 현재 날짜의 남은 리그와 다음 UTC 날짜 호출을
+  중단합니다. 실제 오류 요청과 현재 날짜의 건너뛴 리그는 기존 요청·Discovery 기록에
+  남고, 조회하지 않은 다음 날짜는 CLI 로그로 알립니다.
+- 처리한 날짜 중 하나라도 사용 가능한 결과가 있으면 경고와 종료 코드 `0`, 모두
+  실패하면 종료 코드 `1`을 반환합니다.
+- 이 명령은 한 번 실행한 뒤 종료합니다. 주기적인 실행은 추후 외부 스케줄러가
+  담당합니다.
 
 ### `observer upcoming-candidates`
 
@@ -382,13 +416,14 @@ uv run observer auto-watch \
   후보로 선택합니다. 이미 활성 목록에 들어간 이벤트는 설정이 바뀌어도 중간에
   제거하지 않습니다.
 - 매 후보 확인 때 Discovery 파일 목록과 설정을 새로 읽으므로, 실행 중 별도의
-  `discover-upcoming`이 저장한 새 예정 경기도 감지할 수 있습니다.
+  `discover-auto-watch`나 `discover-upcoming`이 저장한 새 예정 경기도 감지할 수
+  있습니다.
 - 매번 전체 과거 이력을 읽지 않고 `now`부터 `now + within_minutes`까지 걸치는 UTC
   날짜 디렉터리와 `auto_watch_enabled: true`인 리그의 Discovery만 읽습니다. UTC
   자정을 넘는 후보 범위는 두 날짜를 모두 확인합니다. 비활성 리그의 과거 수집 실패는
   Auto-watch 경고에 포함하지 않습니다.
-- Upcoming API를 직접 호출하지 않습니다. `discover-upcoming` 자동 실행은 이 단계에
-  포함되지 않으므로 cron, 클라우드 스케줄러 또는 수동 명령으로 별도 실행해야 합니다.
+- Upcoming API를 직접 호출하지 않습니다. `discover-auto-watch`의 주기적 실행도 이
+  프로세스에 포함하지 않으므로 외부 스케줄러에서 별도로 실행해야 합니다.
 - 상태별 관찰 정책은 실행 시작 시 `config/auto_watch.yaml`에서 읽습니다. 실행 중
   설정을 바꾼 경우 재시작해야 하며, 이미 관찰 중인 이벤트의 그룹은 다음 정상 응답에서
   `time_status`를 다시 확인할 때 갱신됩니다.
@@ -512,12 +547,12 @@ data/metrics/bets-api-requests/{UTC 날짜}/{request_id}.json
 - Event Odds: 이벤트 ID·확인 가능한 종목·배당 마켓
 
 이 영속 기록은 Event View를 사용하는 `collect`, `watch`, `watch-upcoming`, `auto-watch`와
-Upcoming을 사용하는 `discover-upcoming`, Event Odds를 사용하는 `collect-odds`,
-`collect-upcoming-odds`에 모두 생성됩니다. 직접 입력한 이벤트처럼 종목을 확정할 근거가
-없으면 `unknown`으로 기록합니다. `collect-upcoming-odds`는 Discovery의 종목 정보를
-이어받습니다. 응답에 BETS API의 `X-RateLimit-*` 헤더가 있으면 endpoint와 관계없이 같은
-요청 파일에 보존합니다. 요청 시작 기록을 저장하지 못하면 과금될 수 있는 API 호출을
-하지 않습니다.
+Upcoming을 사용하는 `discover-upcoming`, `discover-auto-watch`, Event Odds를 사용하는
+`collect-odds`, `collect-upcoming-odds`에 모두 생성됩니다. 직접 입력한 이벤트처럼 종목을
+확정할 근거가 없으면 `unknown`으로 기록합니다. `collect-upcoming-odds`는 Discovery의
+종목 정보를 이어받습니다. 응답에 BETS API의 `X-RateLimit-*` 헤더가 있으면 endpoint와
+관계없이 같은 요청 파일에 보존합니다. 요청 시작 기록을 저장하지 못하면 과금될 수 있는
+API 호출을 하지 않습니다.
 
 기존 `data/metrics/event-view-api-requests/...` 기록은 새로 생성하지 않지만,
 `auto-watch-status`가 이전 요청량을 잃지 않도록 계속 읽습니다.

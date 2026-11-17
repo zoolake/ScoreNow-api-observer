@@ -15,6 +15,7 @@ HTML 렌더러는 아직 구현되지 않았습니다.
 ```text
 CLI
 ├── discover-upcoming ── 설정된 종목·리그의 예정 경기 탐색
+├── discover-auto-watch ── 활성 리그의 UTC 오늘·내일 예정 경기 탐색
 ├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
 ├── watch-upcoming ── 곧 시작할 경기를 자동 선택해 Event View 반복 수집
 ├── auto-watch ── Discovery 재확인 + 활성 목록 복구 + 지속 Event View 수집
@@ -89,6 +90,31 @@ Upcoming 원문과 CaptureMetadata는 KST 호출 날짜·파일명을 사용하�
 `captured_at`은 UTC를 유지합니다. 리그별 Discovery와 실행 Run은 API에 전달한 UTC
 `target_date`별로 저장하며 경기 예정 시각은 UTC와 KST를 모두 제공합니다. Run에는
 이벤트를 중복 저장하지 않고 리그별 Discovery 경로만 기록합니다.
+
+## `discover-auto-watch` 호출 트리
+
+```text
+cli.discover_auto_watch(dry_run)
+├── upcoming.targets.load_upcoming_targets(...)
+├── upcoming.auto_discovery.build_auto_watch_discovery_plan(...)
+│   ├── auto_watch_enabled=true인 리그만 선택
+│   ├── 명령 시작 시각을 UTC로 변환
+│   └── UTC 오늘·내일과 최대 예상 호출 횟수 계산
+├── --dry-run이면 계획 출력 후 종료
+│   └── Settings·API·저장소 사용 없음
+├── settings.Settings()
+└── UTC 오늘부터 내일 순서로
+    ├── upcoming.discovery.discover_upcoming_events(...)
+    │   └── discover-upcoming과 같은 수집·부분 실패·저장 흐름
+    └── upcoming.auto_discovery.find_fatal_http_status_code(...)
+        └── 401·402·403·429이면 다음 UTC 날짜 호출도 중단
+```
+
+이 명령은 실행 전체를 위한 별도 Run 파일을 만들지 않습니다. 실제로 처리한 각 UTC
+날짜에는 기존 `UpcomingDiscoveryRun`이 저장됩니다. 오류 응답은 공통 BETS API 요청
+기록·원문·CaptureMetadata·리그 Discovery에 남고, 오류 때문에 조회하지 않은 다음 UTC
+날짜는 CLI 로그에만 표시합니다. 명령 자체는 한 번 실행하고 종료하며 반복 실행은 외부
+스케줄러가 담당합니다.
 
 ## `upcoming-candidates` 호출 트리
 
@@ -669,7 +695,7 @@ data/
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `auto_watch`, `auto_watch_status`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `discover_auto_watch`, `upcoming_candidates`, `watch_upcoming`, `auto_watch`, `auto_watch_status`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
 | `auto_watch/config.py` | `load_auto_watch_config`, `AutoWatchConfig` | 상태 그룹과 관찰 상한 설정 검증 |
 | `auto_watch/policy.py` | `apply_auto_watch_time_status`, `find_due_auto_watch_events` | 상태 전이와 수집 종료 시각 판정 |
 | `auto_watch/exceptions.py` | `build_auto_watch_exception_record`, `save_auto_watch_exception_record` | 상태값·UTC 중단 시각별 예외 기록 저장 |
@@ -683,6 +709,7 @@ data/
 | `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events`, `get_event_odds` | BETS API HTTP 호출 |
 | `upcoming/targets.py` | `load_upcoming_targets`, `select_upcoming_targets`, `select_auto_watch_targets` | Upcoming 설정 로드·검증과 직접·자동 리그 선택 |
+| `upcoming/auto_discovery.py` | `build_auto_watch_discovery_plan`, `find_fatal_http_status_code` | 활성 리그의 UTC 오늘·내일 계획과 전체 중단 상태 판정 |
 | `upcoming/candidates.py` | `resolve_latest_league_discoveries`, `select_upcoming_candidates` | 최신 사용 가능 Discovery 선택과 시간 범위 후보 계산 |
 | `upcoming/response.py` | `analyze_upcoming_response` | Upcoming 이벤트·이슈·페이징 분석 |
 | `upcoming/discovery.py` | `discover_upcoming_events`, `capture_upcoming_target` | 대상별 부분 실패 수집과 리그·Run Discovery 생성 |

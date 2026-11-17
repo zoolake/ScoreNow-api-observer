@@ -221,6 +221,131 @@ def test_discover_upcoming_config_error_exits_with_two(monkeypatch) -> None:
     assert "Upcoming 조회 대상 설정을 읽지 못했습니다." in result.output
 
 
+def _auto_discovery_result(
+    status: Literal["completed", "partial", "failed"],
+    *,
+    http_status_code: int | None,
+):
+    result = _result(status)
+    result.captures = (
+        [SimpleNamespace(response=httpx.Response(http_status_code))]
+        if http_status_code is not None
+        else []
+    )
+    return result
+
+
+def test_discover_auto_watch_dry_run_does_not_load_settings_or_call_api(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 18, 23, 50, tzinfo=UTC)
+    enabled = UpcomingTarget("16", "baseball", "349", "kbo", True)
+    disabled = UpcomingTarget("16", "baseball", "225", "mlb", False)
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "load_upcoming_targets", lambda: [disabled, enabled])
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Dry-run에서는 API 설정을 읽으면 안 됩니다.")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "discover_upcoming_events",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Dry-run에서는 API를 호출하면 안 됩니다.")
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["discover-auto-watch", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "2026-11-18, 2026-11-19" in result.output
+    assert "활성 리그: 1개" in result.output
+    assert "예상 Upcoming API 호출: 2회" in result.output
+    assert "baseball/kbo" in result.output
+    assert "baseball/mlb" not in result.output
+    assert "API를 호출하거나 파일을 저장하지 않습니다" in result.output
+
+
+def test_discover_auto_watch_collects_enabled_leagues_for_two_utc_dates(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 11, 18, 23, 50, tzinfo=UTC)
+    enabled = UpcomingTarget("16", "baseball", "349", "kbo", True)
+    disabled = UpcomingTarget("16", "baseball", "225", "mlb", False)
+    received: list[tuple[date, list[UpcomingTarget]]] = []
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "load_upcoming_targets", lambda: [disabled, enabled])
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+
+    def discover(**kwargs):
+        received.append((kwargs["target_date"], kwargs["targets"]))
+        return _auto_discovery_result("completed", http_status_code=200)
+
+    monkeypatch.setattr(cli, "discover_upcoming_events", discover)
+
+    result = CliRunner().invoke(cli.app, ["discover-auto-watch"])
+
+    assert result.exit_code == 0
+    assert received == [
+        (date(2026, 11, 18), [enabled]),
+        (date(2026, 11, 19), [enabled]),
+    ]
+    assert "✅ Auto-watch Discovery 완료" in result.output
+    assert (
+        "UTC 2026-11-18, 2026-11-19의 예정 경기 조회에 성공했습니다." in result.output
+    )
+
+
+def test_discover_auto_watch_stops_next_date_after_fatal_status(monkeypatch) -> None:
+    now = datetime(2026, 11, 18, 23, 50, tzinfo=UTC)
+    enabled = UpcomingTarget("16", "baseball", "349", "kbo", True)
+    received_dates: list[date] = []
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "load_upcoming_targets", lambda: [enabled])
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+
+    def discover(**kwargs):
+        received_dates.append(kwargs["target_date"])
+        return _auto_discovery_result("partial", http_status_code=429)
+
+    monkeypatch.setattr(cli, "discover_upcoming_events", discover)
+
+    result = CliRunner().invoke(cli.app, ["discover-auto-watch"])
+
+    assert result.exit_code == 0
+    assert received_dates == [date(2026, 11, 18)]
+    assert "HTTP 429 오류로 남은 자동 Discovery 호출을 중단" in result.output
+    assert "조회하지 않은 UTC 날짜: 2026-11-19" in result.output
+    assert "⚠️ Auto-watch Discovery 부분 완료" in result.output
+    assert "부분 결과 사용 가능(UTC): 2026-11-18" in result.output
+    assert "오류로 미조회(UTC): 2026-11-19" in result.output
+
+
+def test_discover_auto_watch_exits_one_when_both_dates_fail(monkeypatch) -> None:
+    now = datetime(2026, 11, 18, 23, 50, tzinfo=UTC)
+    enabled = UpcomingTarget("16", "baseball", "349", "kbo", True)
+    received_dates: list[date] = []
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "load_upcoming_targets", lambda: [enabled])
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+
+    def discover(**kwargs):
+        received_dates.append(kwargs["target_date"])
+        return _auto_discovery_result("failed", http_status_code=502)
+
+    monkeypatch.setattr(cli, "discover_upcoming_events", discover)
+
+    result = CliRunner().invoke(cli.app, ["discover-auto-watch"])
+
+    assert result.exit_code == 1
+    assert received_dates == [date(2026, 11, 18), date(2026, 11, 19)]
+    assert "❌ Auto-watch Discovery 실패" in result.output
+    assert "조회 실패(UTC): 2026-11-18, 2026-11-19" in result.output
+
+
 def _candidate_discovery(
     *,
     completed_at: datetime,
