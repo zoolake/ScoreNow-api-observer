@@ -69,6 +69,23 @@ class EndedStatusPolicy(BaseModel):
     followup_minutes: int = Field(gt=0)
 
 
+class AutoWatchRequestLimits(BaseModel):
+    """로컬 요청량 경고에 사용할 종목별 시간당 한도입니다."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    soccer_per_hour: int = Field(gt=0)
+    baseball_per_hour: int = Field(gt=0)
+    warning_percent: int = Field(ge=1, lt=100)
+    danger_percent: int = Field(ge=1, lt=100)
+
+    @model_validator(mode="after")
+    def validate_threshold_order(self) -> Self:
+        if self.warning_percent >= self.danger_percent:
+            raise ValueError("요청량 주의 기준은 위험 기준보다 작아야 합니다.")
+        return self
+
+
 class AutoWatchConfig(BaseModel):
     """Auto-watch의 time_status별 관찰·종료 정책입니다."""
 
@@ -76,12 +93,13 @@ class AutoWatchConfig(BaseModel):
 
     status_policies: AutoWatchStatusPolicies
     ended: EndedStatusPolicy
+    request_limits: AutoWatchRequestLimits
 
     @model_validator(mode="after")
     def validate_status_groups(self) -> Self:
         groups = {
             "waiting_to_start": self.status_policies.waiting_to_start.statuses,
-            "temporarily_stopped": (self.status_policies.temporarily_stopped.statuses),
+            "temporarily_stopped": self.status_policies.temporarily_stopped.statuses,
             "closing": self.status_policies.closing.statuses,
         }
         seen_statuses: dict[int, str] = {}

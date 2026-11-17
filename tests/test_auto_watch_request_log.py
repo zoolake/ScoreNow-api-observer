@@ -8,6 +8,7 @@ from scorenow_api_observer.event_view.request_log import (
     RequestedEvent,
     classify_request_category,
     finish_event_view_api_request,
+    parse_rate_limit_headers,
     start_event_view_api_request,
 )
 
@@ -67,4 +68,31 @@ def test_api_request_record_is_started_before_call_and_completed_in_same_file(
             handle.file_path.read_text(encoding="utf-8")
         )
         == completed
+    )
+
+
+def test_parse_rate_limit_headers_reads_available_values() -> None:
+    result = parse_rate_limit_headers(
+        {
+            "X-RateLimit-Limit": "3600",
+            "X-RateLimit-Remaining": "3599",
+            "X-RateLimit-Reset": "1794877200",
+        }
+    )
+
+    assert result is not None
+    assert result.limit == 3600
+    assert result.remaining == 3599
+    assert result.reset_at == datetime.fromtimestamp(1794877200, tz=UTC)
+
+
+def test_parse_rate_limit_headers_ignores_invalid_values() -> None:
+    assert (
+        parse_rate_limit_headers(
+            {
+                "X-RateLimit-Limit": "invalid",
+                "X-RateLimit-Remaining": "-1",
+            }
+        )
+        is None
     )

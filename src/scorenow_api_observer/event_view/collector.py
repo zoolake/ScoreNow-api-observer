@@ -11,6 +11,7 @@ from scorenow_api_observer.event_view.request_log import (
     EventViewApiRequestRecord,
     RequestedEvent,
     finish_event_view_api_request,
+    parse_rate_limit_headers,
     start_event_view_api_request,
 )
 from scorenow_api_observer.event_view.response import (
@@ -104,6 +105,7 @@ def capture_event_view(
         completed_at=datetime.now(UTC),
         outcome="completed",
         http_status_code=response.status_code,
+        rate_limit=parse_rate_limit_headers(response.headers),
     )
 
     captured_at = datetime.now(UTC)

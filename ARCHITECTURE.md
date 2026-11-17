@@ -18,6 +18,7 @@ CLI
 ├── upcoming-candidates ── 저장된 Discovery에서 곧 시작할 경기 조회
 ├── watch-upcoming ── 곧 시작할 경기를 자동 선택해 Event View 반복 수집
 ├── auto-watch ── Discovery 재확인 + 활성 목록 복구 + 지속 Event View 수집
+├── auto-watch-status ── 로컬 실행·요청량·예외 상태 조회(API 호출 없음)
 ├── collect-upcoming-odds ── 곧 시작할 경기를 자동 선택해 Event Odds 한 번 수집
 ├── collect           ── Event View API 호출 및 Capture 저장
 ├── collect-odds      ── 이벤트별 Event Odds API 호출 및 일간 최신 Snapshot 저장
@@ -40,6 +41,7 @@ CLI
 제약에 맞춰 `collect_event_odds()`를 공유하고, 이벤트별 호출 결과를 메모리에서
 집계합니다. `compare`와 watch의 구조 비교는 `compare_observations()`로 합쳐집니다.
 `report`는 저장된 자료만 사용하는 오프라인 명령이며 API 설정을 읽지 않습니다.
+`auto-watch-status`도 상태·요청·예외 파일만 읽는 오프라인 명령입니다.
 기능별 코드는 `event_view`, `upcoming`, `event_odds`, `reporting` 하위 패키지로
 분리되어 있습니다. `auto_watch` 패키지는 활성 목록과 API 요청 기록의 영속 모델·저장을
 담고 있습니다.
@@ -186,7 +188,10 @@ cli.auto_watch(within_minutes, interval, candidate_check_interval, max_cycles)
 ├── settings.Settings()
 ├── auto_watch.state.load_auto_watch_state(...)
 │   └── 없으면 빈 상태를 만들고 즉시 저장
+├── auto_watch.heartbeat.new_auto_watch_heartbeat(...)
+│   └── 시작 시각·수집 간격·프로세스 ID를 원자적으로 저장
 └── cli._run_auto_watch(...)
+    ├── 매 처리 주기 시작에 Heartbeat의 last_cycle_at 갱신
     ├── 후보 확인 시각이 되면 매번
     │   ├── 설정 파일 다시 로드
     │   ├── upcoming.candidates.candidate_target_dates(...)
@@ -214,7 +219,8 @@ cli.auto_watch(within_minutes, interval, candidate_check_interval, max_cycles)
     │   └── 401·402·403·429면 전체 자동 수집 중단
     ├── cli._update_auto_watch_states(...)
     │   └── 상태 그룹·최초 감지 시각·마지막 CaptureMetadata 경로 반영
-    └── 상태가 바뀔 때 auto_watch.state.save_auto_watch_state(...)
+    ├── 상태가 바뀔 때 auto_watch.state.save_auto_watch_state(...)
+    └── 정상 중단·실패 상태를 Heartbeat에 저장
 ```
 
 ```text
@@ -227,6 +233,7 @@ data/discoveries/events-upcoming
       auto-watch ──────► Event View Capture·Observation·구조 변화
           │
           ├────────────► data/state/auto-watch/state.json
+          ├────────────► data/state/auto-watch/heartbeat.json
           ├────────────► data/exceptions/auto-watch/time-status-*/...
           └────────────► data/metrics/event-view-api-requests/...
 ```
@@ -241,6 +248,13 @@ API 요청 기록도 실제 HTTP
 이벤트별 `event_id`와 `sport_code`를 보존하고 종목별 이벤트 개수 집계 필드는 중복
 저장하지 않습니다. 호출 분류는 `football_only`, `baseball_only`, `mixed`, `unknown`
 중 하나입니다.
+
+`state.json`은 실행 중인 이벤트와 상태 타이머를 담는 프로그램 작성 체크포인트이고,
+`config/auto_watch.yaml`은 상태 그룹·관찰 시간·시간당 요청 한도를 담는 사람 작성 운영
+정책입니다. 전자는 재시작 복구를 위해 계속 갱신되고 Git에서 제외되며, 후자는 실행
+방식을 코드와 분리하기 위해 Git에 포함됩니다. `heartbeat.json`은 활성 이벤트 내용이
+아니라 프로세스가 마지막으로 처리 주기를 시작한 시각과 정상·실패 종료 여부만
+기록합니다.
 
 `AutoWatchCollectionMode`는 응답 상태에 따른 수집 처리 방식을 나타냅니다.
 `inplay`는 1, `ended`는 3, `waiting_to_start`는 0·2,
@@ -259,6 +273,27 @@ API 요청 기록도 실제 HTTP
 1단계는 상태 파일을 공유하는 단일 `auto-watch` 프로세스를 전제로 합니다. 같은
 저장소에서 여러 프로세스를 동시에 실행할 때의 잠금과 리더 선출은 아직 구현하지
 않았습니다.
+
+## `auto-watch-status` 호출 트리
+
+```text
+cli.auto_watch_status(date, recent_exceptions, all_exceptions)
+└── auto_watch.status.build_auto_watch_status_report(...)
+    ├── config/auto_watch.yaml 로드
+    ├── data/state/auto-watch/state.json 로드
+    ├── data/state/auto-watch/heartbeat.json 로드
+    ├── 명령 실행 시각 직전 60분의 Event View 요청 기록 로드
+    ├── 선택한 KST 날짜와 겹치는 UTC 날짜의 요청·예외 기록 로드
+    ├── 손상된 파일은 실패 목록에 남기고 나머지 파일 계속 처리
+    └── auto_watch.status.render_auto_watch_status(...)
+```
+
+이 명령은 API 클라이언트와 `Settings`를 생성하지 않습니다. 최근 60분 요청량은 로컬
+요청 기록으로 계산하고, 혼합 요청은 보수적으로 Soccer·Baseball 양쪽에 포함합니다.
+응답에 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`이 있으면 가장
+최근 60분 기록의 값을 별도로 보여줍니다. 일간 요청과 예외는 KST 날짜를 기준으로
+집계하지만, 저장 디렉터리는 기존 정책대로 UTC 날짜이므로 해당 KST 하루와 겹치는 두
+UTC 날짜 디렉터리만 탐색합니다.
 
 ## `collect` 호출 트리
 
@@ -573,6 +608,7 @@ data/
 ├── changes/event-view/{event_id}/YYYY-MM-DD/{capture_file}
 ├── metrics/event-view-api-requests/{UTC 요청 날짜}/{request_id}.json
 ├── state/auto-watch/state.json
+├── state/auto-watch/heartbeat.json
 ├── exceptions/auto-watch/time-status-{값}/{UTC stopped_at 날짜}/
 │   └── {UTC stopped_at 시각 Z}_{event_id}.json
 ├── raw/events-upcoming/{KST 호출 날짜}/{capture_file}
@@ -598,19 +634,22 @@ data/
 | `UpcomingDiscoveryRun` | 한 CLI 실행의 대상과 리그별 Discovery 경로 | 포함하지 않음 |
 | `OddsSnapshotMetadata` | 이벤트별 일간 최신 Odds 원문의 요청·응답 정보 | 포함하지 않음 |
 | `AutoWatchState` | 재시작할 활성 이벤트와 상태별 관찰·중단 결정 시각 | 포함하지 않음 |
+| `AutoWatchHeartbeat` | Auto-watch 프로세스의 시작·최근 처리·종료 상태 | 포함하지 않음 |
 | `AutoWatchExceptionRecord` | 정상 종료 외 상태로 관찰 상한에 도달한 이벤트 | 원문 대신 상태·출처 경로 포함 |
-| `EventViewApiRequestRecord` | Event View 요청 한 번의 종목 조합·결과 | 포함하지 않음 |
+| `EventViewApiRequestRecord` | Event View 요청 한 번의 종목 조합·결과·응답 요청 한도 | 포함하지 않음 |
 
 ## 주요 모듈과 함수
 
 | 모듈 | 주요 함수·클래스 | 책임 |
 |---|---|---|
-| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `auto_watch`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
+| `cli.py` | `discover_upcoming`, `upcoming_candidates`, `watch_upcoming`, `auto_watch`, `auto_watch_status`, `collect_upcoming_odds`, `collect`, `collect_odds`, `watch`, `compare`, `report`, `inspect_field`, `inspect_timeline` | 명령 조합과 사용자 출력 |
 | `auto_watch/config.py` | `load_auto_watch_config`, `AutoWatchConfig` | 상태 그룹과 관찰 상한 설정 검증 |
 | `auto_watch/policy.py` | `apply_auto_watch_time_status`, `find_due_auto_watch_events` | 상태 전이와 수집 종료 시각 판정 |
 | `auto_watch/exceptions.py` | `build_auto_watch_exception_record`, `save_auto_watch_exception_record` | 상태값·UTC 중단 시각별 예외 기록 저장 |
+| `auto_watch/heartbeat.py` | `new_auto_watch_heartbeat`, `touch_auto_watch_heartbeat`, `finish_auto_watch_heartbeat` | 프로세스 시작·최근 처리·종료 상태 저장 |
+| `auto_watch/status.py` | `build_auto_watch_status_report`, `render_auto_watch_status` | 로컬 실행·요청량·예외 상태 부분 성공 조회 |
 | `auto_watch/state.py` | `load_auto_watch_state`, `save_auto_watch_state`, `add_auto_watch_candidates`, `mark_auto_watch_stop_decisions`, `remove_auto_watch_events` | 활성 이벤트의 재시작 복구와 중단 처리 |
-| `event_view/request_log.py` | `start_event_view_api_request`, `finish_event_view_api_request`, `classify_request_category` | HTTP 호출 전 기록과 종목 조합별 호출 분류 |
+| `event_view/request_log.py` | `start_event_view_api_request`, `finish_event_view_api_request`, `classify_request_category`, `parse_rate_limit_headers` | HTTP 호출 전 기록, 종목 조합별 분류와 응답 요청 한도 보존 |
 | `event_view/request.py` | `parse_requested_event_ids`, `build_event_view_request_batches` | 직접 입력 검증과 최대 10개 요청 배치 구성 |
 | `event_view/watching.py` | `EventWatchState`, `apply_event_time_status`, `find_completed_event_ids` | 이벤트별 종료 감지와 종료 후 15분 추가 수집 판정 |
 | `bets_api_client.py` | `get_event_view`, `get_upcoming_events`, `get_event_odds` | BETS API HTTP 호출 |

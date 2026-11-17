@@ -14,7 +14,12 @@ def _response(*, content: bytes, content_type: str) -> httpx.Response:
     response = httpx.Response(
         200,
         content=content,
-        headers={"content-type": content_type},
+        headers={
+            "content-type": content_type,
+            "x-ratelimit-limit": "3600",
+            "x-ratelimit-remaining": "3599",
+            "x-ratelimit-reset": "1794877200",
+        },
         request=httpx.Request("GET", "https://example.test/v1/event/view"),
     )
     response.elapsed = timedelta(milliseconds=12.34)
@@ -94,6 +99,9 @@ def test_capture_event_view_analyzes_json_response(
     assert result.api_request_record is not None
     assert result.api_request_record.outcome == "completed"
     assert result.api_request_record.request_category == "unknown"
+    assert result.api_request_record.rate_limit is not None
+    assert result.api_request_record.rate_limit.limit == 3600
+    assert result.api_request_record.rate_limit.remaining == 3599
     assert result.metadata.requested_event_ids == ["A"]
     assert result.metadata.returned_event_ids == ["A", "C"]
     assert result.metadata.response_issues == [

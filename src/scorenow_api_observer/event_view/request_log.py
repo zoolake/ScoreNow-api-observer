@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,10 +29,33 @@ class RequestedEvent(BaseModel):
     sport_code: str | None = None
 
 
+class RateLimitSnapshot(BaseModel):
+    """BETS 응답의 X-RateLimit 헤더를 해석한 시점별 한도 정보입니다."""
+
+    limit: int | None = Field(default=None, ge=0)
+    remaining: int | None = Field(default=None, ge=0)
+    reset_at: datetime | None = None
+
+    @field_validator("reset_at")
+    @classmethod
+    def validate_reset_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("요청 한도 초기화 시각에는 시간대 정보가 필요합니다.")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_at_least_one_value(self) -> Self:
+        if self.limit is None and self.remaining is None and self.reset_at is None:
+            raise ValueError("요청 한도 정보에는 하나 이상의 값이 필요합니다.")
+        return self
+
+
 class EventViewApiRequestRecord(BaseModel):
     """Event View HTTP 요청 한 건의 시작과 결과 기록입니다."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     request_id: str = Field(min_length=1)
     requested_at: datetime
     completed_at: datetime | None = None
@@ -43,6 +67,7 @@ class EventViewApiRequestRecord(BaseModel):
     outcome: RequestOutcome = "started"
     http_status_code: int | None = Field(default=None, ge=100, le=599)
     error_type: str | None = None
+    rate_limit: RateLimitSnapshot | None = None
 
     @field_validator("requested_at", "completed_at")
     @classmethod
@@ -62,7 +87,11 @@ class EventViewApiRequestRecord(BaseModel):
         if self.outcome == "started":
             if self.completed_at is not None:
                 raise ValueError("started 요청에는 완료 시각을 기록할 수 없습니다.")
-            if self.http_status_code is not None or self.error_type is not None:
+            if (
+                self.http_status_code is not None
+                or self.error_type is not None
+                or self.rate_limit is not None
+            ):
                 raise ValueError("started 요청에는 결과를 기록할 수 없습니다.")
             return self
 
@@ -129,6 +158,7 @@ def finish_event_view_api_request(
     outcome: Literal["completed", "request_error"],
     http_status_code: int | None = None,
     error_type: str | None = None,
+    rate_limit: RateLimitSnapshot | None = None,
 ) -> EventViewApiRequestRecord:
     """요청 시작 파일을 결과가 포함된 최종 기록으로 원자적으로 교체합니다."""
 
@@ -138,10 +168,30 @@ def finish_event_view_api_request(
         outcome=outcome,
         http_status_code=http_status_code,
         error_type=error_type,
+        rate_limit=rate_limit,
     )
     completed_record = EventViewApiRequestRecord.model_validate(record_data)
     _replace_record_file(completed_record, handle.file_path)
     return completed_record
+
+
+def parse_rate_limit_headers(headers: Mapping[str, str]) -> RateLimitSnapshot | None:
+    """응답 헤더에 포함된 유효한 X-RateLimit 값을 가능한 범위에서 읽습니다."""
+
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    limit = _parse_nonnegative_int(normalized_headers.get("x-ratelimit-limit"))
+    remaining = _parse_nonnegative_int(normalized_headers.get("x-ratelimit-remaining"))
+    reset_epoch = _parse_nonnegative_int(normalized_headers.get("x-ratelimit-reset"))
+    reset_at = (
+        datetime.fromtimestamp(reset_epoch, tz=UTC) if reset_epoch is not None else None
+    )
+    if limit is None and remaining is None and reset_at is None:
+        return None
+    return RateLimitSnapshot(
+        limit=limit,
+        remaining=remaining,
+        reset_at=reset_at,
+    )
 
 
 def _replace_record_file(record: EventViewApiRequestRecord, file_path: Path) -> None:
@@ -160,3 +210,13 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("API 요청 기록 시각에는 시간대 정보가 필요합니다.")
     return value.astimezone(UTC)
+
+
+def _parse_nonnegative_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed_value = int(value)
+    except ValueError:
+        return None
+    return parsed_value if parsed_value >= 0 else None

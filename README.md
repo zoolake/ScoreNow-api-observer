@@ -143,6 +143,13 @@ API를 호출하지 않으므로 새로운 Discovery를 만들려면 별도 명�
 `data/state/auto-watch/state.json`에 저장됩니다. 프로세스를 다시 시작하면 이 파일에서
 이어서 수집합니다. 상태별 관찰 상한은 `config/auto_watch.yaml`에서 관리합니다.
 
+현재 실행 상태, 최근 60분 요청 수와 예외 기록은 API를 호출하지 않고 확인할 수
+있습니다.
+
+```bash
+uv run observer auto-watch-status
+```
+
 ### 9. 곧 시작하는 경기의 배당률 수집
 
 저장된 Discovery에서 현재부터 10분 이내 시작하는 경기를 선택해 Event Odds API를
@@ -413,6 +420,67 @@ uv run observer auto-watch \
 - 상태 파일을 공유하는 동시 실행 잠금은 아직 없으므로 `auto-watch`는 한 저장소에서
   한 프로세스만 실행해야 합니다.
 
+#### `state.json`과 `auto_watch.yaml`의 차이
+
+두 파일은 역할과 관리 주체가 다릅니다.
+
+- `data/state/auto-watch/state.json`은 **프로그램이 쓰는 현재 진행 상황**입니다. 현재
+  관찰 중인 이벤트, 마지막 `time_status`, 상태별 타이머 시작 시각, 마지막
+  CaptureMetadata, 예외 저장을 기다리는 중단 결정 등을 담습니다. `auto-watch`가
+  중단되거나 컴퓨터가 재시작되어도 이전 위치에서 이어가기 위해 필요합니다. 실행 중
+  자동으로 계속 바뀌며 `data/state/`는 Git에 포함하지 않습니다. 특별한 복구 목적이
+  아니라면 사람이 직접 수정하지 않습니다.
+- `config/auto_watch.yaml`은 **사람이 정하는 운영 규칙**입니다. 어떤 `time_status`를
+  같은 그룹으로 볼지, 각 상태를 얼마나 더 관찰할지, Soccer·Baseball의 시간당 요청
+  한도와 경고 기준을 담습니다. 코드 수정 없이 운영 기준을 조정하기 위해 분리했으며
+  Git에 포함합니다. 변경 내용은 `auto-watch`를 다시 시작할 때 적용됩니다.
+
+간단히 말하면 `state.json`은 “지금 어디까지 진행했는가”, `auto_watch.yaml`은 “어떤
+규칙으로 진행할 것인가”를 저장합니다.
+
+### `observer auto-watch-status`
+
+Auto-watch 관련 로컬 파일만 읽어 현재 상태를 보여줍니다. BETS API와 Upcoming API를
+호출하지 않으며 API 토큰도 필요하지 않습니다.
+
+```bash
+uv run observer auto-watch-status
+```
+
+다음 내용을 여러 구역으로 나누어 표시합니다.
+
+- 명령을 실행한 시각을 KST와 UTC로 함께 표시합니다.
+- `data/state/auto-watch/heartbeat.json`을 읽어 Auto-watch가 실행 중인지, 마지막 처리
+  주기가 언제였는지 보여줍니다. Heartbeat는 Auto-watch가 시작·반복·종료할 때
+  프로그램이 갱신하는 실행 확인 파일입니다.
+- 수집 중인 경기와 예상 수집 종료 시각을 보여줍니다. 예외 JSON 저장을 재시도하는
+  경기는 별도로 표시하고 이 상태에서는 추가 API를 호출하지 않는다고 명시합니다.
+- 명령 실행 시각을 기준으로 직전 60분의 Event View 요청 수를 축구 전용·야구
+  전용·혼합·분류 불가로 나눕니다. 혼합 요청은 안전하게 Soccer와 Baseball 양쪽
+  한도에 포함하여 계산합니다. 이 값은 현재 저장소에 기록된 요청만 포함하므로, 같은
+  API 토큰을 다른 프로그램에서도 사용한다면 그 요청은 로컬 집계에 잡히지 않습니다.
+- 응답에 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` 헤더가
+  있었다면 가장 최근 값을 함께 표시합니다. 로컬 계산보다 BETS API가 직접 반환한
+  현재 한도 정보에 가깝지만, 마지막 응답 시각도 함께 확인해야 합니다.
+- 선택한 KST 날짜의 요청 누적과 예외 전체 집계를 보여줍니다. 예외 상세는 기본
+  10개만 표시하지만 집계에는 그 날짜의 모든 예외를 사용합니다.
+- 파일 하나를 읽지 못해도 읽을 수 있는 나머지 자료를 표시하고, 마지막에 문제가
+  있는 파일과 원인을 경고로 출력합니다. 이 경우 종료 코드는 `1`입니다.
+
+조회 범위는 다음 옵션으로 조절합니다.
+
+```bash
+uv run observer auto-watch-status --date 2026-11-18
+uv run observer auto-watch-status --recent-exceptions 20
+uv run observer auto-watch-status --all-exceptions
+```
+
+- `--date`: 일간 요청·예외 집계에 사용할 KST 날짜입니다. 생략하면 현재 KST
+  날짜입니다. 최근 60분 요청 수와 현재 실행 상태는 이 옵션과 관계없이 명령 실행
+  시각을 기준으로 합니다.
+- `--recent-exceptions`: 상세히 표시할 최근 예외 개수이며 기본값은 `10`입니다.
+- `--all-exceptions`: 선택한 KST 날짜의 예외를 모두 상세히 표시합니다.
+
 실행 중 실제 HTTP 요청을 시작하기 전에 다음 경로에 호출 기록을 먼저 만듭니다.
 
 ```text
@@ -425,7 +493,8 @@ data/metrics/event-view-api-requests/{UTC 날짜}/{request_id}.json
 필요할 때 다시 계산할 수 있게 합니다. CLI 종료 요약은 축구 전용·야구 전용·혼합·분류
 불가 요청 횟수를 보여줍니다. 이 영속 기록은 `auto-watch`뿐 아니라 공통 Event View
 수집 함수를 사용하는 `collect`, `watch`, `watch-upcoming`에도 생성됩니다. 직접 입력한
-이벤트처럼 종목을 확정할 근거가 없으면 `unknown`으로 기록합니다.
+이벤트처럼 종목을 확정할 근거가 없으면 `unknown`으로 기록합니다. 응답에 BETS API의
+`X-RateLimit-*` 헤더가 있으면 같은 요청 파일에 보존합니다.
 
 ### `observer collect`
 

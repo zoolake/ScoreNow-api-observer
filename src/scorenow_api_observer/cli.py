@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,13 @@ from scorenow_api_observer.auto_watch.exceptions import (
     build_auto_watch_exception_record,
     save_auto_watch_exception_record,
 )
+from scorenow_api_observer.auto_watch.heartbeat import (
+    AutoWatchHeartbeat,
+    finish_auto_watch_heartbeat,
+    new_auto_watch_heartbeat,
+    save_auto_watch_heartbeat,
+    touch_auto_watch_heartbeat,
+)
 from scorenow_api_observer.auto_watch.models import AutoWatchState
 from scorenow_api_observer.auto_watch.policy import (
     AutoWatchStatusUpdate,
@@ -33,6 +41,10 @@ from scorenow_api_observer.auto_watch.state import (
     new_auto_watch_state,
     remove_auto_watch_events,
     save_auto_watch_state,
+)
+from scorenow_api_observer.auto_watch.status import (
+    build_auto_watch_status_report,
+    render_auto_watch_status,
 )
 from scorenow_api_observer.event_odds.collector import (
     DEFAULT_ODDS_MARKETS,
@@ -627,6 +639,49 @@ def watch_upcoming(
     )
 
 
+@app.command("auto-watch-status")
+def auto_watch_status(
+    target_date_value: str | None = typer.Option(
+        None,
+        "--date",
+        help="요청·예외 누적을 확인할 KST 날짜(YYYY-MM-DD). 생략하면 현재 KST 날짜",
+    ),
+    recent_exceptions: int = typer.Option(
+        10,
+        "--recent-exceptions",
+        min=1,
+        help="상세히 표시할 최근 예외 개수",
+    ),
+    all_exceptions: bool = typer.Option(
+        False,
+        "--all-exceptions",
+        help="선택한 KST 날짜의 예외를 모두 상세 표시",
+    ),
+) -> None:
+    """로컬 파일만 읽어 Auto-watch 실행·요청·예외 상태를 확인합니다."""
+
+    now = _utc_now()
+    selected_date = (
+        _parse_target_date_or_exit(target_date_value)
+        if target_date_value is not None
+        else now.astimezone(KST).date()
+    )
+    try:
+        report = build_auto_watch_status_report(
+            now=now,
+            target_date_kst=selected_date,
+            recent_exception_limit=recent_exceptions,
+            show_all_exceptions=all_exceptions,
+        )
+    except ValueError as error:
+        typer.echo(f"Auto-watch 상태를 확인하지 못했습니다. {error}", err=True)
+        raise typer.Exit(code=2) from None
+
+    typer.echo(render_auto_watch_status(report), nl=False)
+    if report.failures:
+        raise typer.Exit(code=1)
+
+
 @app.command("auto-watch")
 def auto_watch(
     within_minutes: int = typer.Option(
@@ -693,6 +748,19 @@ def auto_watch(
         )
         raise typer.Exit(code=1) from None
 
+    heartbeat = new_auto_watch_heartbeat(
+        now=now,
+        interval_seconds=interval_seconds,
+        process_id=os.getpid(),
+    )
+    try:
+        save_auto_watch_heartbeat(heartbeat)
+    except OSError as error:
+        typer.echo(
+            f"Auto-watch 실행 상태 파일을 저장하지 못했습니다. {error}", err=True
+        )
+        raise typer.Exit(code=1) from None
+
     _print_auto_watch_start_summary(
         enabled_target_count=len(enabled_targets),
         active_event_count=len(state.active_events),
@@ -710,6 +778,7 @@ def auto_watch(
         candidate_check_interval_seconds=candidate_check_interval_seconds,
         max_cycles=max_cycles,
         auto_watch_config=auto_watch_config,
+        heartbeat=heartbeat,
     )
     if not completed:
         raise typer.Exit(code=1)
@@ -1209,6 +1278,7 @@ def _run_auto_watch(
     candidate_check_interval_seconds: int,
     max_cycles: int | None,
     auto_watch_config: AutoWatchConfig,
+    heartbeat: AutoWatchHeartbeat | None = None,
 ) -> bool:
     """Discovery 재확인, 상태 복구, Event View 수집을 한 루프로 조합합니다."""
 
@@ -1227,6 +1297,18 @@ def _run_auto_watch(
         while max_cycles is None or cycle_count < max_cycles:
             cycle_count += 1
             now = _utc_now()
+
+            if heartbeat is not None:
+                touch_auto_watch_heartbeat(heartbeat, now=now)
+                try:
+                    save_auto_watch_heartbeat(heartbeat)
+                except OSError as error:
+                    typer.echo(
+                        f"Auto-watch 실행 상태를 갱신하지 못했습니다. {error}",
+                        err=True,
+                    )
+                    stop_reason = "Heartbeat 저장 실패"
+                    break
 
             if next_candidate_check_at is None or now >= next_candidate_check_at:
                 try:
@@ -1361,6 +1443,19 @@ def _run_auto_watch(
         active_event_count=len(state.active_events),
         request_counts=request_counts,
     )
+    if heartbeat is not None:
+        finish_auto_watch_heartbeat(
+            heartbeat,
+            now=_utc_now(),
+            failed=stop_reason is not None,
+            failure_message=stop_reason,
+        )
+        try:
+            save_auto_watch_heartbeat(heartbeat)
+        except OSError as error:
+            typer.echo(f"Auto-watch 종료 상태를 저장하지 못했습니다. {error}", err=True)
+            if stop_reason is None:
+                stop_reason = "Heartbeat 저장 실패"
     if stop_reason is not None:
         typer.echo(f"auto-watch 중단 사유: {stop_reason}", err=True)
         return False

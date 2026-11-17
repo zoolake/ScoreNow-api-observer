@@ -42,6 +42,11 @@ status_policies:
 ended:
   status: 3
   followup_minutes: 15
+request_limits:
+  soccer_per_hour: 3600
+  baseball_per_hour: 3600
+  warning_percent: 80
+  danger_percent: 90
 """.lstrip(),
         encoding="utf-8",
     )
