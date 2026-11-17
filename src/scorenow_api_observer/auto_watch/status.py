@@ -58,12 +58,16 @@ class StoredAutoWatchException:
 
 @dataclass(frozen=True)
 class AutoWatchRequestStatus:
-    recent_records: list[EventViewApiRequestRecord]
+    window_start: datetime
+    window_end: datetime
+    current_window_records: list[EventViewApiRequestRecord]
     daily_records: list[EventViewApiRequestRecord]
-    latest_rate_limit_record: EventViewApiRequestRecord | None
+    valid_rate_limit_records: dict[RequestCategory, EventViewApiRequestRecord]
 
-    def recent_category_counts(self) -> dict[RequestCategory, int]:
-        counts = Counter(record.request_category for record in self.recent_records)
+    def current_window_category_counts(self) -> dict[RequestCategory, int]:
+        counts = Counter(
+            record.request_category for record in self.current_window_records
+        )
         return {category: counts[category] for category in REQUEST_CATEGORIES}
 
     def daily_category_counts(self) -> dict[RequestCategory, int]:
@@ -127,12 +131,12 @@ def build_auto_watch_status_report(
     )
 
     day_start_utc, day_end_utc = _kst_day_utc_window(target_date_kst)
-    recent_start_utc = normalized_now - timedelta(hours=1)
+    window_start_utc, window_end_utc = _current_hour_window(normalized_now)
     request_paths = _find_request_paths(
         base_directory=request_base_directory,
         windows=(
             (day_start_utc, day_end_utc),
-            (recent_start_utc, normalized_now + timedelta(microseconds=1)),
+            (window_start_utc, window_end_utc),
         ),
     )
     request_records = _load_request_records(request_paths, failures=failures)
@@ -141,19 +145,17 @@ def build_auto_watch_status_report(
         for record in request_records
         if day_start_utc <= record.requested_at < day_end_utc
     ]
-    recent_records = [
+    current_window_records = [
         record
         for record in request_records
-        if recent_start_utc <= record.requested_at <= normalized_now
+        if (
+            window_start_utc <= record.requested_at < window_end_utc
+            and record.requested_at <= normalized_now
+        )
     ]
-    latest_rate_limit_record = max(
-        (
-            record
-            for record in recent_records
-            if record.rate_limit is not None and record.requested_at <= normalized_now
-        ),
-        key=lambda record: record.requested_at,
-        default=None,
+    valid_rate_limit_records = _latest_valid_rate_limit_records(
+        current_window_records,
+        window_end=window_end_utc,
     )
 
     exception_paths = _find_exception_paths(
@@ -175,15 +177,17 @@ def build_auto_watch_status_report(
         state=state,
         heartbeat=heartbeat,
         requests=AutoWatchRequestStatus(
-            recent_records=sorted(
-                recent_records,
+            window_start=window_start_utc,
+            window_end=window_end_utc,
+            current_window_records=sorted(
+                current_window_records,
                 key=lambda record: record.requested_at,
             ),
             daily_records=sorted(
                 daily_records,
                 key=lambda record: record.requested_at,
             ),
-            latest_rate_limit_record=latest_rate_limit_record,
+            valid_rate_limit_records=valid_rate_limit_records,
         ),
         exceptions=exceptions,
         recent_exception_limit=recent_exception_limit,
@@ -350,19 +354,39 @@ def _render_active_event(
 
 
 def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> None:
-    recent_counts = report.requests.recent_category_counts()
-    recent_total = len(report.requests.recent_records)
-    soccer_count = recent_counts["football_only"] + recent_counts["mixed"]
-    baseball_count = recent_counts["baseball_only"] + recent_counts["mixed"]
+    current_counts = report.requests.current_window_category_counts()
+    current_total = len(report.requests.current_window_records)
+    soccer_count = (
+        current_counts["football_only"]
+        + current_counts["mixed"]
+        + current_counts["unknown"]
+    )
+    baseball_count = (
+        current_counts["baseball_only"]
+        + current_counts["mixed"]
+        + current_counts["unknown"]
+    )
     lines.extend(
         [
             "",
-            "[최근 60분 Event View 요청]",
-            f"  • 전체 요청 시도: {recent_total}회",
-            f"  • 축구 전용: {recent_counts['football_only']}회",
-            f"  • 야구 전용: {recent_counts['baseball_only']}회",
-            f"  • 축구·야구 혼합: {recent_counts['mixed']}회",
-            f"  • 종목 분류 불가: {recent_counts['unknown']}회",
+            "[현재 Event View API 요청 제한 구간]",
+            (
+                "  • KST: "
+                f"{_format_datetime(report.requests.window_start, KST)} ~ "
+                f"{_format_datetime(report.requests.window_end, KST)}"
+            ),
+            (
+                "  • UTC: "
+                f"{_format_datetime(report.requests.window_start, UTC)} ~ "
+                f"{_format_datetime(report.requests.window_end, UTC)}"
+            ),
+            "",
+            "[현재 구간 Event View 요청]",
+            f"  • 전체 요청 시도: {current_total}회",
+            f"  • 축구 전용: {current_counts['football_only']}회",
+            f"  • 야구 전용: {current_counts['baseball_only']}회",
+            f"  • 축구·야구 혼합: {current_counts['mixed']}회",
+            f"  • 종목 분류 불가: {current_counts['unknown']}회",
         ]
     )
     if report.config is not None:
@@ -370,7 +394,7 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
         lines.extend(
             [
                 "",
-                "[최근 60분 요청 한도 — 로컬 기록 기준]",
+                "[현재 구간 요청 한도 — 로컬 기록 기준]",
                 _format_limit_line(
                     label="Soccer API",
                     count=soccer_count,
@@ -385,27 +409,30 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
                     warning_percent=limits.warning_percent,
                     danger_percent=limits.danger_percent,
                 ),
-                "  ℹ️ 혼합 요청은 안전하게 Soccer와 Baseball 양쪽에 포함했습니다.",
+                "  ℹ️ 혼합·종목 불명 요청은 안전하게 양쪽에 포함했습니다.",
                 "  ℹ️ 현재 저장소에 기록된 요청만 포함한 값입니다.",
             ]
         )
 
     completed_count = sum(
-        record.outcome == "completed" for record in report.requests.recent_records
+        record.outcome == "completed"
+        for record in report.requests.current_window_records
     )
     request_error_count = sum(
-        record.outcome == "request_error" for record in report.requests.recent_records
+        record.outcome == "request_error"
+        for record in report.requests.current_window_records
     )
     started_count = sum(
-        record.outcome == "started" for record in report.requests.recent_records
+        record.outcome == "started" for record in report.requests.current_window_records
     )
     too_many_requests_count = sum(
-        record.http_status_code == 429 for record in report.requests.recent_records
+        record.http_status_code == 429
+        for record in report.requests.current_window_records
     )
     lines.extend(
         [
             "",
-            "[최근 60분 요청 결과]",
+            "[현재 구간 요청 결과]",
             f"  • HTTP 응답 완료: {completed_count}회",
             f"  • 연결 실패: {request_error_count}회",
             f"  • 완료 정보가 없는 요청: {started_count}회",
@@ -413,27 +440,7 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
         ]
     )
 
-    rate_limit_record = report.requests.latest_rate_limit_record
-    if rate_limit_record is not None and rate_limit_record.rate_limit is not None:
-        rate_limit = rate_limit_record.rate_limit
-        lines.extend(["", "[BETS API가 반환한 최신 요청 한도]"])
-        if rate_limit.limit is not None:
-            lines.append(f"  • 시간당 한도: {rate_limit.limit:,}회")
-        if rate_limit.remaining is not None:
-            lines.append(f"  • 남은 요청: {rate_limit.remaining:,}회")
-        if rate_limit.reset_at is not None:
-            lines.append(
-                f"  • 제한 초기화: {_format_datetime(rate_limit.reset_at, KST)} KST"
-            )
-        lines.extend(
-            [
-                f"  • 요청 분류: {_request_category_label(rate_limit_record.request_category)}",
-                (
-                    "  • 확인한 응답 시각: "
-                    f"{_format_datetime(rate_limit_record.requested_at, KST)} KST"
-                ),
-            ]
-        )
+    _render_rate_limit_records(lines, report)
 
     daily_counts = report.requests.daily_category_counts()
     lines.extend(
@@ -447,6 +454,47 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
             f"  • 분류 불가: {daily_counts['unknown']}회",
         ]
     )
+
+
+def _render_rate_limit_records(
+    lines: list[str],
+    report: AutoWatchStatusReport,
+) -> None:
+    lines.extend(["", "[BETS API 응답 기준 현재 구간 요청 한도]"])
+    records = report.requests.valid_rate_limit_records
+    if not records:
+        lines.append("  • 현재 구간 종료 시각과 일치하는 X-RateLimit 응답이 없습니다.")
+        return
+
+    for category in REQUEST_CATEGORIES:
+        record = records.get(category)
+        if record is None or record.rate_limit is None:
+            continue
+        rate_limit = record.rate_limit
+        lines.append(f"  • {_request_category_label(category)} 응답")
+        if rate_limit.limit is not None:
+            lines.append(f"    시간당 한도: {rate_limit.limit:,}회")
+        if rate_limit.remaining is not None:
+            lines.append(f"    남은 요청: {rate_limit.remaining:,}회")
+        lines.extend(
+            [
+                (
+                    "    제한 초기화: "
+                    f"{_format_datetime(report.requests.window_end, KST)} KST / "
+                    f"{_format_datetime(report.requests.window_end, UTC)} UTC"
+                ),
+                (
+                    "    응답 확인 시각: "
+                    f"{_format_datetime(_request_completion_time(record), KST)} KST"
+                ),
+            ]
+        )
+
+    if "mixed" in records or "unknown" in records:
+        lines.append(
+            "  ℹ️ 혼합·종목 불명 응답의 잔여량은 특정 종목의 공식 값으로 "
+            "합치지 않습니다."
+        )
 
 
 def _render_exception_status(lines: list[str], report: AutoWatchStatusReport) -> None:
@@ -625,6 +673,34 @@ def _kst_day_utc_window(target_date: date) -> tuple[datetime, datetime]:
     start_kst = datetime.combine(target_date, time.min, tzinfo=KST)
     end_kst = start_kst + timedelta(days=1)
     return start_kst.astimezone(UTC), end_kst.astimezone(UTC)
+
+
+def _current_hour_window(now: datetime) -> tuple[datetime, datetime]:
+    normalized_now = _as_utc(now)
+    window_start = normalized_now.replace(minute=0, second=0, microsecond=0)
+    return window_start, window_start + timedelta(hours=1)
+
+
+def _latest_valid_rate_limit_records(
+    records: list[EventViewApiRequestRecord],
+    *,
+    window_end: datetime,
+) -> dict[RequestCategory, EventViewApiRequestRecord]:
+    latest_by_category: dict[RequestCategory, EventViewApiRequestRecord] = {}
+    for record in records:
+        rate_limit = record.rate_limit
+        if rate_limit is None or rate_limit.reset_at != window_end:
+            continue
+        previous = latest_by_category.get(record.request_category)
+        if previous is None or _request_completion_time(
+            record
+        ) > _request_completion_time(previous):
+            latest_by_category[record.request_category] = record
+    return latest_by_category
+
+
+def _request_completion_time(record: EventViewApiRequestRecord) -> datetime:
+    return record.completed_at or record.requested_at
 
 
 def _utc_dates_for_window(start: datetime, end: datetime) -> tuple[date, ...]:

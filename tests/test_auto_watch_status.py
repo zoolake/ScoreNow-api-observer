@@ -26,6 +26,7 @@ from scorenow_api_observer.event_view.request_log import (
     EventViewApiRequestRecord,
     RateLimitSnapshot,
     RequestedEvent,
+    classify_request_category,
 )
 
 KST = ZoneInfo("Asia/Seoul")
@@ -37,7 +38,7 @@ def _save_request_record(
     *,
     request_id: str,
     requested_at: datetime,
-    sport_codes: list[str],
+    sport_codes: list[str | None],
     http_status_code: int = 200,
     rate_limit: RateLimitSnapshot | None = None,
 ) -> Path:
@@ -45,18 +46,11 @@ def _save_request_record(
         RequestedEvent(event_id=f"{request_id}-{index}", sport_code=sport_code)
         for index, sport_code in enumerate(sport_codes)
     ]
-    sport_code_set = set(sport_codes)
-    if sport_code_set == {"football"}:
-        category = "football_only"
-    elif sport_code_set == {"baseball"}:
-        category = "baseball_only"
-    else:
-        category = "mixed"
     record = EventViewApiRequestRecord(
         request_id=request_id,
         requested_at=requested_at,
         completed_at=requested_at + timedelta(seconds=1),
-        request_category=category,
+        request_category=classify_request_category(requested_events),
         requested_events=requested_events,
         outcome="completed",
         http_status_code=http_status_code,
@@ -87,10 +81,11 @@ def _exception_record(
     )
 
 
-def test_status_counts_rolling_hour_and_kst_day_across_utc_dates(
+def test_status_counts_current_hour_and_valid_headers_by_category(
     tmp_path: Path,
 ) -> None:
-    now = datetime(2026, 11, 18, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 11, 18, 0, 10, tzinfo=UTC)
+    window_end = datetime(2026, 11, 18, 1, tzinfo=UTC)
     request_directory = tmp_path / "requests"
     _save_request_record(
         request_directory,
@@ -100,19 +95,63 @@ def test_status_counts_rolling_hour_and_kst_day_across_utc_dates(
     )
     _save_request_record(
         request_directory,
-        request_id="recent-football",
-        requested_at=now - timedelta(minutes=30),
+        request_id="previous-hour-football",
+        requested_at=datetime(2026, 11, 17, 23, 50, tzinfo=UTC),
         sport_codes=["football"],
     )
     _save_request_record(
         request_directory,
-        request_id="recent-mixed",
-        requested_at=now - timedelta(minutes=10),
+        request_id="current-football",
+        requested_at=datetime(2026, 11, 18, 0, 0, tzinfo=UTC),
+        sport_codes=["football"],
+        rate_limit=RateLimitSnapshot(
+            limit=3600,
+            remaining=3500,
+            reset_at=window_end,
+        ),
+    )
+    _save_request_record(
+        request_directory,
+        request_id="current-football-latest",
+        requested_at=datetime(2026, 11, 18, 0, 1, tzinfo=UTC),
+        sport_codes=["football"],
+        rate_limit=RateLimitSnapshot(
+            limit=3600,
+            remaining=3499,
+            reset_at=window_end,
+        ),
+    )
+    _save_request_record(
+        request_directory,
+        request_id="current-baseball-expired-header",
+        requested_at=datetime(2026, 11, 18, 0, 2, tzinfo=UTC),
+        sport_codes=["baseball"],
+        rate_limit=RateLimitSnapshot(
+            limit=3600,
+            remaining=1111,
+            reset_at=datetime(2026, 11, 18, 0, 0, tzinfo=UTC),
+        ),
+    )
+    _save_request_record(
+        request_directory,
+        request_id="current-mixed",
+        requested_at=datetime(2026, 11, 18, 0, 5, tzinfo=UTC),
         sport_codes=["football", "baseball"],
         rate_limit=RateLimitSnapshot(
             limit=3600,
-            remaining=3597,
-            reset_at=now + timedelta(minutes=30),
+            remaining=3490,
+            reset_at=window_end,
+        ),
+    )
+    _save_request_record(
+        request_directory,
+        request_id="current-unknown",
+        requested_at=datetime(2026, 11, 18, 0, 9, tzinfo=UTC),
+        sport_codes=[None],
+        rate_limit=RateLimitSnapshot(
+            limit=3600,
+            remaining=3480,
+            reset_at=window_end,
         ),
     )
 
@@ -126,24 +165,79 @@ def test_status_counts_rolling_hour_and_kst_day_across_utc_dates(
         exception_base_directory=tmp_path / "exceptions",
     )
 
-    assert len(report.requests.recent_records) == 2
-    assert len(report.requests.daily_records) == 3
-    assert report.requests.recent_category_counts() == {
-        "football_only": 1,
-        "baseball_only": 0,
+    assert report.requests.window_start == datetime(2026, 11, 18, 0, tzinfo=UTC)
+    assert report.requests.window_end == window_end
+    assert len(report.requests.current_window_records) == 5
+    assert len(report.requests.daily_records) == 7
+    assert report.requests.current_window_category_counts() == {
+        "football_only": 2,
+        "baseball_only": 1,
         "mixed": 1,
-        "unknown": 0,
+        "unknown": 1,
+    }
+    assert set(report.requests.valid_rate_limit_records) == {
+        "football_only",
+        "mixed",
+        "unknown",
     }
     output = render_auto_watch_status(report)
-    assert "Soccer API: 2 / 3,600회" in output
-    assert "Baseball API: 1 / 3,600회" in output
-    assert "남은 요청: 3,597회" in output
+    assert "KST: 2026-11-18 09:00:00 ~ 2026-11-18 10:00:00" in output
+    assert "UTC: 2026-11-18 00:00:00 ~ 2026-11-18 01:00:00" in output
+    assert "Soccer API: 4 / 3,600회" in output
+    assert "Baseball API: 3 / 3,600회" in output
+    assert "남은 요청: 3,499회" in output
+    assert "남은 요청: 3,500회" not in output
+    assert "남은 요청: 3,490회" in output
+    assert "남은 요청: 3,480회" in output
+    assert "남은 요청: 1,111회" not in output
+    assert "야구 전용 응답" not in output
     assert "2026-11-18 KST 누적 요청" in output
-    assert "전체 요청 시도: 3회" in output
+    assert "전체 요청 시도: 7회" in output
+
+
+def test_status_uses_start_inclusive_end_exclusive_hour_boundary(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 11, 18, 1, 0, tzinfo=UTC)
+    request_directory = tmp_path / "requests"
+    _save_request_record(
+        request_directory,
+        request_id="previous-window",
+        requested_at=datetime(2026, 11, 18, 0, 59, 59, tzinfo=UTC),
+        sport_codes=["football"],
+    )
+    _save_request_record(
+        request_directory,
+        request_id="current-window-start",
+        requested_at=now,
+        sport_codes=["baseball"],
+    )
+    _save_request_record(
+        request_directory,
+        request_id="future-current-window",
+        requested_at=now + timedelta(seconds=1),
+        sport_codes=["baseball"],
+    )
+
+    report = build_auto_watch_status_report(
+        now=now,
+        target_date_kst=date(2026, 11, 18),
+        config_path=CONFIG_PATH,
+        state_path=tmp_path / "missing-state.json",
+        heartbeat_path=tmp_path / "missing-heartbeat.json",
+        request_base_directory=request_directory,
+        exception_base_directory=tmp_path / "exceptions",
+    )
+
+    assert [record.request_id for record in report.requests.current_window_records] == [
+        "current-window-start"
+    ]
+    assert report.requests.window_start == now
+    assert report.requests.window_end == now + timedelta(hours=1)
 
 
 def test_status_keeps_valid_results_when_one_file_is_damaged(tmp_path: Path) -> None:
-    now = datetime(2026, 11, 18, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 11, 18, 0, 10, tzinfo=UTC)
     request_directory = tmp_path / "requests"
     _save_request_record(
         request_directory,
@@ -152,6 +246,7 @@ def test_status_keeps_valid_results_when_one_file_is_damaged(tmp_path: Path) -> 
         sport_codes=["football"],
     )
     damaged_path = request_directory / "2026-11-17" / "damaged.json"
+    damaged_path.parent.mkdir(parents=True, exist_ok=True)
     damaged_path.write_text("{not-json", encoding="utf-8")
 
     report = build_auto_watch_status_report(
@@ -164,7 +259,7 @@ def test_status_keeps_valid_results_when_one_file_is_damaged(tmp_path: Path) -> 
         exception_base_directory=tmp_path / "exceptions",
     )
 
-    assert len(report.requests.recent_records) == 1
+    assert len(report.requests.current_window_records) == 1
     assert len(report.failures) == 1
     output = render_auto_watch_status(report)
     assert "전체 요청 시도: 1회" in output

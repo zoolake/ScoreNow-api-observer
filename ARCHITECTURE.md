@@ -294,18 +294,19 @@ cli.auto_watch_status(date, recent_exceptions, all_exceptions)
     ├── config/auto_watch.yaml 로드
     ├── data/state/auto-watch/state.json 로드
     ├── data/state/auto-watch/heartbeat.json 로드
-    ├── 명령 실행 시각 직전 60분의 Event View 요청 기록 로드
+    ├── 명령 실행 시각이 속한 UTC 정각 구간의 Event View 요청 기록 로드
     ├── 선택한 KST 날짜와 겹치는 UTC 날짜의 요청·예외 기록 로드
     ├── 손상된 파일은 실패 목록에 남기고 나머지 파일 계속 처리
     └── auto_watch.status.render_auto_watch_status(...)
 ```
 
-이 명령은 API 클라이언트와 `Settings`를 생성하지 않습니다. 최근 60분 요청량은 로컬
-요청 기록으로 계산하고, 혼합 요청은 보수적으로 Soccer·Baseball 양쪽에 포함합니다.
-응답에 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`이 있으면 가장
-최근 60분 기록의 값을 별도로 보여줍니다. 일간 요청과 예외는 KST 날짜를 기준으로
-집계하지만, 저장 디렉터리는 기존 정책대로 UTC 날짜이므로 해당 KST 하루와 겹치는 두
-UTC 날짜 디렉터리만 탐색합니다.
+이 명령은 API 클라이언트와 `Settings`를 생성하지 않습니다. 현재 UTC 정각 이상 다음
+정각 미만을 요청 제한 구간으로 사용하고, 아직 발생하지 않은 미래 시각의 기록은
+제외합니다. 혼합·분류 불가 요청은 로컬 Soccer·Baseball 추정치 양쪽에 보수적으로
+포함합니다. `X-RateLimit-Reset`이 현재 구간 종료 시각과 일치하는 응답만 유효한 현재
+구간 정보로 선택하고, 축구 전용·야구 전용·혼합·분류 불가별 가장 최근 값을 분리해
+보여줍니다. 일간 요청과 예외는 KST 날짜를 기준으로 집계하지만, 저장 디렉터리는 기존
+정책대로 UTC 날짜이므로 해당 KST 하루와 겹치는 두 UTC 날짜 디렉터리만 탐색합니다.
 
 ## `collect` 호출 트리
 
