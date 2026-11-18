@@ -60,7 +60,7 @@ def test_save_upcoming_capture_uses_kst_date_and_readable_file_name(
         base_directory=tmp_path / "metadata",
     )
 
-    file_name = "mlb_2026-10-17T01-55-15_KST_capture.json"
+    file_name = "mlb_2026-10-17T01-55-15-999999_KST_capture.json"
     assert raw_path == tmp_path / "raw" / "2026-10-17" / file_name
     assert metadata_path == tmp_path / "metadata" / "2026-10-17" / file_name
     assert raw_path.read_bytes() == b"{}"

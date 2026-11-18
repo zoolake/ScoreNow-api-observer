@@ -87,9 +87,10 @@ cli.discover_upcoming(target_date_value, league_labels)
 종료 코드는 `0`이고, 모든 대상 실패만 종료 코드 `1`입니다.
 
 Upcoming 원문과 CaptureMetadata는 KST 호출 날짜·파일명을 사용하고, JSON 안의
-`captured_at`은 UTC를 유지합니다. 리그별 Discovery와 실행 Run은 API에 전달한 UTC
-`target_date`별로 저장하며 경기 예정 시각은 UTC와 KST를 모두 제공합니다. Run에는
-이벤트를 중복 저장하지 않고 리그별 Discovery 경로만 기록합니다.
+`captured_at`은 UTC를 유지합니다. 파일명의 시각은 같은 리그를 1초 안에 연속 조회해도
+충돌하지 않도록 마이크로초까지 포함합니다. 리그별 Discovery와 실행 Run은 API에
+전달한 UTC `target_date`별로 저장하며 경기 예정 시각은 UTC와 KST를 모두 제공합니다.
+Run에는 이벤트를 중복 저장하지 않고 리그별 Discovery 경로만 기록합니다.
 
 ## `discover-auto-watch` 호출 트리
 

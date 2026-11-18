@@ -152,7 +152,7 @@ def load_league_upcoming_discovery(
 
 
 def _capture_file_name(*, league_label: str, kst_captured_at: datetime) -> str:
-    timestamp = kst_captured_at.strftime("%Y-%m-%dT%H-%M-%S")
+    timestamp = kst_captured_at.strftime("%Y-%m-%dT%H-%M-%S-%f")
     return f"{league_label}_{timestamp}_KST_capture.json"
 
 

@@ -826,12 +826,12 @@ data/metadata/event-odds/2026-10-22/12345678.json
 ### Upcoming 원문·메타데이터·Discovery
 
 Upcoming 원문과 메타데이터는 사람이 호출 시점을 쉽게 찾을 수 있도록 KST 날짜
-디렉터리와 KST 파일명을 사용합니다. 파일명에는 소수점 이하 초를 넣지 않으며 `:` 대신
-`-`를 사용합니다.
+디렉터리와 KST 파일명을 사용합니다. 같은 리그를 1초 안에 연속 조회해도 원문이
+충돌하지 않도록 파일명에는 마이크로초까지 넣고, `:` 대신 `-`를 사용합니다.
 
 ```text
-data/raw/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15_KST_capture.json
-data/metadata/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15_KST_capture.json
+data/raw/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15-999999_KST_capture.json
+data/metadata/events-upcoming/2026-10-17/mlb_2026-10-17T01-55-15-999999_KST_capture.json
 ```
 
 JSON 안에서 수집 순서를 판별하는 `captured_at`, `started_at`, `completed_at`은 UTC로
