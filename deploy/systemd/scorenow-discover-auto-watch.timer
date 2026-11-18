@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ScoreNow Upcoming Discovery every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=scorenow-discover-auto-watch.service
+
+[Install]
+WantedBy=timers.target

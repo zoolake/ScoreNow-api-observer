@@ -1,0 +1,24 @@
+[Unit]
+Description=ScoreNow API Observer Auto-watch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=scorenow
+Group=scorenow
+WorkingDirectory=/opt/scorenow-api-observer
+EnvironmentFile=/etc/scorenow-api-observer/bets-api.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/scorenow-api-observer/.venv/bin/observer auto-watch
+Restart=on-abnormal
+RestartSec=30s
+KillSignal=SIGINT
+TimeoutStopSec=60s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=ScoreNow API Observer Upcoming Discovery
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=scorenow
+Group=scorenow
+WorkingDirectory=/opt/scorenow-api-observer
+EnvironmentFile=/etc/scorenow-api-observer/bets-api.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/scorenow-api-observer/.venv/bin/observer discover-auto-watch
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true

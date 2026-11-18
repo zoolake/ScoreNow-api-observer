@@ -9,6 +9,11 @@ Event View 엔드포인트로 선택한 경기를 수집·비교·분석할 수 
 현재 구현 구조와 수집·비교·보고서 분석의 실제 함수 호출 흐름은
 [구조 문서](ARCHITECTURE.md)에서 확인할 수 있습니다.
 
+Oracle VM에서 `scorenow` 전용 사용자와 systemd로 운영하는 방법은
+[`deploy/systemd/README.md`](deploy/systemd/README.md)에서 확인할 수 있습니다. API
+토큰은 프로젝트 디렉터리가 아니라 `/etc/scorenow-api-observer/bets-api.env`에서
+관리합니다.
+
 ## 요구 사항
 
 - Python 3.14 이상

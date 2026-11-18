@@ -47,6 +47,32 @@ CLI
 분리되어 있습니다. `auto_watch` 패키지는 활성 목록·예외·실행 상태를,
 `bets_api_request_log` 모듈은 모든 endpoint의 API 요청 기록을 담당합니다.
 
+## Oracle VM 자동 실행 구조
+
+Oracle VM에서는 `scorenow` 전용 사용자가 `/opt/scorenow-api-observer`의 프로그램을
+실행합니다. API 토큰은 코드·수집 데이터와 분리된
+`/etc/scorenow-api-observer/bets-api.env`에서 systemd 환경변수로 전달합니다.
+
+```text
+scorenow-discover-auto-watch.timer
+    │ UTC 00·06·12·18시
+    ▼
+scorenow-discover-auto-watch.service
+    │ discover-auto-watch 한 번 실행
+    ▼
+data/discoveries/events-upcoming
+    │ 저장된 Discovery를 주기적으로 다시 읽음
+    ▼
+scorenow-auto-watch.service
+    └── auto-watch 계속 실행 → Event View Capture·상태·예외·요청 기록
+```
+
+Auto-watch 서비스는 프로그램이 종료 코드와 함께 끝난 설정·저장·자동 재시도 금지
+오류를 systemd가 즉시 반복 실행하지 않도록 `Restart=on-abnormal`을 사용합니다. 연결
+오류처럼 다시 시도 가능한 문제는 실행 중인 Auto-watch가 다음 정상 수집 주기에
+처리합니다. Discovery 서비스는 실패 직후 재시도하지 않고 다음 타이머 예약을
+기다립니다. 원본 unit과 설치·로그 확인 방법은 `deploy/systemd`에서 관리합니다.
+
 ## `discover-upcoming` 호출 트리
 
 ```text
