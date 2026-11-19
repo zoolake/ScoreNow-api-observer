@@ -11,7 +11,7 @@ WorkingDirectory=/opt/scorenow-api-observer
 EnvironmentFile=/etc/scorenow-api-observer/bets-api.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/scorenow-api-observer/.venv/bin/observer auto-watch
+ExecStart=/opt/scorenow-api-observer/.venv/bin/observer auto-watch --interval 120
 Restart=on-abnormal
 RestartSec=30s
 KillSignal=SIGINT
