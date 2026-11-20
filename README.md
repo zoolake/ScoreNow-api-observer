@@ -562,6 +562,38 @@ API 호출을 하지 않습니다.
 기존 `data/metrics/event-view-api-requests/...` 기록은 새로 생성하지 않지만,
 `auto-watch-status`가 이전 요청량을 잃지 않도록 계속 읽습니다.
 
+### `observer check-operations-alerts`
+
+Auto-watch의 마지막 처리 시각과 현재 정각 구간의 축구·야구 요청량을 로컬 기록으로
+점검합니다. `DISCORD_WEBHOOK_URL`을 운영 환경에 설정하면 기준에 도달했을 때
+디스코드로 알립니다. 기본값과 예약 점검 방법은
+[systemd 운영 문서](deploy/systemd/README.md)에 있습니다.
+
+```bash
+uv run observer check-operations-alerts
+```
+
+### `observer publish-daily-report`
+
+BETS API 요청·경기 예외 로컬 기록을 집계해 디스코드에 KST 일간 운영 보고서를
+발행합니다. 첫 실행에는 `DISCORD_WEBHOOK_URL`을 운영 환경에 설정합니다.
+BETS API에는 요청하지 않습니다.
+
+```bash
+uv run observer publish-daily-report
+uv run observer publish-daily-report --date 2026-11-19
+```
+
+기본 대상은 전날 KST 00:00부터 발행 당일 KST 00:00 직전까지입니다. 보고서를
+`reports/daily-operations/YYYY-MM-DD.md`에 먼저 저장한 뒤 디스코드 메시지 한
+건에 요약 카드와 Markdown 파일을 담습니다. 일부 자료를 읽을 수 없으면 요약과
+상세에 부분 집계를 표시합니다.
+
+자동 발행은 같은 날짜의 확인된 발행을 건너뜁니다. 날짜를 직접 지정하면 기존에
+저장한 보고서를 다시 보냅니다. 해당 날짜의 파일이 없으면 로컬 기록으로 생성합니다.
+전송 오류가 나면 저장된 파일이 보존됩니다. 응답을 받기 전에 연결이 끊긴 경우에는
+디스코드 채널을 확인한 뒤 재발행할 수 있습니다.
+
 ### `observer collect`
 
 지정한 이벤트를 Event View API로 한 수집 주기 호출하고 원문 응답과 호출 메타데이터를

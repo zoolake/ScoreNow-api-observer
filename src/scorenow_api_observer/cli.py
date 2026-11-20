@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,6 +11,10 @@ import typer
 from jinja2 import TemplateError
 from pydantic import ValidationError
 
+from scorenow_api_observer.auto_watch.alerts import (
+    NON_RETRYABLE_AUTO_WATCH_STATUS_CODES,
+    AutoWatchAlerts,
+)
 from scorenow_api_observer.auto_watch.config import (
     AUTO_WATCH_CONFIG_PATH,
     AutoWatchConfig,
@@ -33,6 +38,7 @@ from scorenow_api_observer.auto_watch.lock import (
     acquire_auto_watch_process_lock,
 )
 from scorenow_api_observer.auto_watch.models import AutoWatchState
+from scorenow_api_observer.auto_watch.operations_check import check_operations_alerts
 from scorenow_api_observer.auto_watch.policy import (
     AutoWatchStatusUpdate,
     apply_auto_watch_time_status,
@@ -51,6 +57,9 @@ from scorenow_api_observer.auto_watch.status import (
     build_auto_watch_status_report,
     render_auto_watch_status,
 )
+from scorenow_api_observer.bets_api_client import EVENT_VIEW_ENDPOINT
+from scorenow_api_observer.discord_alert_state import DiscordAlertState
+from scorenow_api_observer.discord_webhook import load_discord_webhook
 from scorenow_api_observer.event_odds.collector import (
     DEFAULT_ODDS_MARKETS,
     OddsCollectionResult,
@@ -100,6 +109,7 @@ from scorenow_api_observer.event_view.watching import (
     find_completed_event_ids,
 )
 from scorenow_api_observer.reporting.analysis import analyze_event_view_report
+from scorenow_api_observer.reporting.daily_publication import publish_daily_report
 from scorenow_api_observer.reporting.event_timeline import analyze_event_timeline
 from scorenow_api_observer.reporting.field_inspection import analyze_field_inspection
 from scorenow_api_observer.reporting.field_path import (
@@ -165,7 +175,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 KST = ZoneInfo("Asia/Seoul")
-NON_RETRYABLE_AUTO_WATCH_STATUS_CODES = frozenset({401, 402, 403, 429})
 AUTO_WATCH_REQUEST_CATEGORIES: tuple[RequestCategory, ...] = (
     "football_only",
     "baseball_only",
@@ -886,6 +895,70 @@ def auto_watch_status(
         raise typer.Exit(code=1)
 
 
+@app.command("check-operations-alerts")
+def check_operations_alerts_command() -> None:
+    """로컬 실행 상태와 현재 요청량을 디스코드 알림 기준으로 점검합니다."""
+
+    webhook = load_discord_webhook()
+    if webhook is None:
+        typer.echo("ℹ️ 디스코드 웹훅을 설정하면 운영 알림 점검을 실행합니다.")
+        return
+    result = check_operations_alerts(
+        now=_utc_now(),
+        delivery=DiscordAlertState(webhook.send),
+    )
+    typer.echo(f"🔎 운영 점검 완료 · 발송 확인 {result.sent_count}건")
+    if result.failures:
+        typer.echo(
+            f"⚠️ 로컬 기록 {len(result.failures)}건을 읽지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command("publish-daily-report")
+def publish_daily_report_command(
+    target_date_value: str | None = typer.Option(
+        None,
+        "--date",
+        help="발행할 KST 날짜(YYYY-MM-DD). 생략하면 전날",
+    ),
+) -> None:
+    """로컬 요청·예외 기록의 일간 운영 보고서를 디스코드에 발행합니다."""
+
+    target_date = (
+        _parse_target_date_or_exit(target_date_value)
+        if target_date_value is not None
+        else _utc_now().astimezone(KST).date() - timedelta(days=1)
+    )
+    webhook = load_discord_webhook()
+    try:
+        result = publish_daily_report(
+            target_date,
+            sender=webhook.send if webhook is not None else None,
+            manual=target_date_value is not None,
+        )
+    except OSError, ValueError:
+        typer.echo(
+            "❌ 일간 보고서 또는 발행 기록을 읽거나 저장하지 못했습니다.", err=True
+        )
+        raise typer.Exit(code=1) from None
+
+    if result.outcome == "already_published":
+        typer.echo(f"ℹ️ {target_date} KST 보고서는 이미 발행했습니다.")
+        return
+    typer.echo(f"💾 일간 운영 보고서: {result.path}")
+    if result.outcome == "failed":
+        reason = (
+            "디스코드 웹훅을 설정해 주세요."
+            if webhook is None
+            else "디스코드 전송을 확인하지 못했습니다."
+        )
+        typer.echo(f"❌ {reason}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"ℹ️ {target_date} KST 보고서를 디스코드에 발행했습니다.")
+
+
 @app.command("auto-watch")
 def auto_watch(
     within_minutes: int = typer.Option(
@@ -917,12 +990,22 @@ def auto_watch(
 ) -> None:
     """활성화된 리그의 저장된 Upcoming 후보를 지속적으로 자동 수집합니다."""
 
+    started_at = _utc_now()
+    webhook = load_discord_webhook()
+    alerts = (
+        AutoWatchAlerts(DiscordAlertState(webhook.send), started_at=started_at)
+        if webhook is not None
+        else None
+    )
+
     try:
-        process_lock = acquire_auto_watch_process_lock(now=_utc_now())
+        process_lock = acquire_auto_watch_process_lock(now=started_at)
     except AutoWatchAlreadyRunningError as error:
         _print_auto_watch_lock_conflict(error)
         raise typer.Exit(code=1) from None
     except OSError as error:
+        if alerts is not None:
+            alerts.stopped("중복 실행 잠금 준비 실패", now=_utc_now())
         typer.echo(
             f"Auto-watch 중복 실행 잠금을 준비하지 못했습니다. {error}",
             err=True,
@@ -935,6 +1018,7 @@ def auto_watch(
             interval_seconds=interval_seconds,
             candidate_check_interval_seconds=candidate_check_interval_seconds,
             max_cycles=max_cycles,
+            alerts=alerts,
         )
     finally:
         process_lock.release()
@@ -946,6 +1030,7 @@ def _start_auto_watch(
     interval_seconds: int,
     candidate_check_interval_seconds: int,
     max_cycles: int | None,
+    alerts: AutoWatchAlerts | None = None,
 ) -> None:
     """잠금을 획득한 단일 프로세스에서 Auto-watch를 초기화하고 실행합니다."""
 
@@ -953,23 +1038,31 @@ def _start_auto_watch(
         configured_targets = load_upcoming_targets()
         enabled_targets = select_auto_watch_targets(configured_targets)
     except (OSError, ValueError) as error:
+        if alerts is not None:
+            alerts.stopped("Upcoming 조회 대상 설정 오류", now=_utc_now())
         typer.echo(f"Upcoming 조회 대상 설정을 읽지 못했습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
     if not enabled_targets:
+        if alerts is not None:
+            alerts.stopped("자동 수집 대상 리그 없음", now=_utc_now())
         typer.echo("auto-watch가 활성화된 리그가 없습니다.", err=True)
         raise typer.Exit(code=2)
 
     try:
         auto_watch_config = load_auto_watch_config()
     except (OSError, InvalidAutoWatchConfigError) as error:
+        if alerts is not None:
+            alerts.stopped("Auto-watch 상태 정책 설정 오류", now=_utc_now())
         typer.echo(f"Auto-watch 상태 정책 설정을 읽지 못했습니다. {error}", err=True)
         raise typer.Exit(code=2) from None
 
     try:
         settings = Settings()  # pyright: ignore[reportCallIssue]
-    except ValidationError as error:
-        typer.echo(f"API 설정을 읽지 못했습니다. {error}", err=True)
+    except ValidationError:
+        if alerts is not None:
+            alerts.stopped("BETS API 설정 오류", now=_utc_now())
+        typer.echo("API 설정을 읽지 못했습니다.", err=True)
         raise typer.Exit(code=2) from None
 
     now = _utc_now()
@@ -979,19 +1072,24 @@ def _start_auto_watch(
             state = new_auto_watch_state(now=now)
             save_auto_watch_state(state)
     except (OSError, ValueError, ValidationError) as error:
+        if alerts is not None:
+            alerts.stopped("수집 상태 파일 초기화 실패", now=_utc_now())
         typer.echo(
             f"auto-watch 상태 파일을 읽거나 만들지 못했습니다. {error}", err=True
         )
         raise typer.Exit(code=1) from None
 
     heartbeat = new_auto_watch_heartbeat(
-        now=now,
+        now=alerts.started_at if alerts is not None else now,
         interval_seconds=interval_seconds,
         process_id=os.getpid(),
     )
+    touch_auto_watch_heartbeat(heartbeat, now=now)
     try:
         save_auto_watch_heartbeat(heartbeat)
     except OSError as error:
+        if alerts is not None:
+            alerts.stopped("실행 상태 파일 저장 실패", now=_utc_now())
         typer.echo(
             f"Auto-watch 실행 상태 파일을 저장하지 못했습니다. {error}", err=True
         )
@@ -1015,6 +1113,7 @@ def _start_auto_watch(
         max_cycles=max_cycles,
         auto_watch_config=auto_watch_config,
         heartbeat=heartbeat,
+        alerts=alerts,
     )
     if not completed:
         raise typer.Exit(code=1)
@@ -1537,6 +1636,7 @@ def _run_auto_watch(
     max_cycles: int | None,
     auto_watch_config: AutoWatchConfig,
     heartbeat: AutoWatchHeartbeat | None = None,
+    alerts: AutoWatchAlerts | None = None,
 ) -> bool:
     """Discovery 재확인, 상태 복구, Event View 수집을 한 루프로 조합합니다."""
 
@@ -1608,6 +1708,7 @@ def _run_auto_watch(
                 state=state,
                 now=now,
                 auto_watch_config=auto_watch_config,
+                alerts=alerts,
             )
             completed_event_count += len(stopped_event_ids)
             exception_event_count += stopped_exception_count
@@ -1620,6 +1721,8 @@ def _run_auto_watch(
                 for event in state.active_events
                 if event.stop_decided_at is None
             }
+            transient_failure: str | None = None
+            normal_collection = bool(active_events_by_id)
             if active_events_by_id:
                 request_batches = build_event_view_request_batches(
                     list(active_events_by_id)
@@ -1645,19 +1748,39 @@ def _run_auto_watch(
                         )
                         for event_id in requested_event_ids
                     ]
-                    result, should_stop, request_category = _capture_auto_watch_batch(
+                    batch = _capture_auto_watch_batch(
                         settings=settings,
                         requested_event_ids=requested_event_ids,
                         requested_events=requested_events,
                     )
-                    if request_category is not None:
-                        request_counts[request_category] += 1
+                    if batch.request_category is not None:
+                        request_counts[batch.request_category] += 1
+                    transient_failure = batch.transient_failure or transient_failure
+                    stop_reason = batch.stop_reason
+                    result = batch.result
+                    normal_collection = normal_collection and (
+                        result is not None
+                        and result.response.is_success
+                        and result.metadata.response_analysis_status == "completed"
+                    )
                     if result is not None:
                         saved_count += 1
+                        if (
+                            alerts is not None
+                            and result.response.is_success
+                            and result.metadata.response_analysis_status == "completed"
+                        ):
+                            alerts.response(
+                                result.metadata,
+                                cycle=cycle_count,
+                                events=active_events_by_id,
+                            )
                         if _update_auto_watch_states(
                             state=state,
                             result=result,
                             auto_watch_config=auto_watch_config,
+                            alerts=alerts,
+                            cycle=cycle_count,
                         ):
                             try:
                                 save_auto_watch_state(state)
@@ -1666,10 +1789,9 @@ def _run_auto_watch(
                                     f"auto-watch 상태를 저장하지 못했습니다. {error}",
                                     err=True,
                                 )
-                                should_stop = True
+                                stop_reason = "상태 저장 실패"
 
-                    if should_stop:
-                        stop_reason = "자동 재시도 금지 또는 로컬 저장 실패"
+                    if stop_reason is not None:
                         break
 
                 if stop_reason is not None:
@@ -1685,6 +1807,13 @@ def _run_auto_watch(
                     "현재 활성 이벤트가 없습니다."
                 )
 
+            if alerts is not None:
+                alerts.finish_cycle(
+                    now=now,
+                    transient_failure=transient_failure,
+                    normal_collection=normal_collection,
+                    active_event_ids=set(active_events_by_id),
+                )
             if max_cycles is not None and cycle_count >= max_cycles:
                 break
             time.sleep(interval_seconds)
@@ -1701,6 +1830,8 @@ def _run_auto_watch(
         active_event_count=len(state.active_events),
         request_counts=request_counts,
     )
+    if stop_reason is not None and alerts is not None:
+        alerts.stopped(stop_reason, now=_utc_now())
     if heartbeat is not None:
         finish_auto_watch_heartbeat(
             heartbeat,
@@ -1714,6 +1845,8 @@ def _run_auto_watch(
             typer.echo(f"Auto-watch 종료 상태를 저장하지 못했습니다. {error}", err=True)
             if stop_reason is None:
                 stop_reason = "Heartbeat 저장 실패"
+                if alerts is not None:
+                    alerts.stopped(stop_reason, now=_utc_now())
     if stop_reason is not None:
         typer.echo(f"auto-watch 중단 사유: {stop_reason}", err=True)
         return False
@@ -1725,6 +1858,7 @@ def _process_due_auto_watch_events(
     state: AutoWatchState,
     now: datetime,
     auto_watch_config: AutoWatchConfig,
+    alerts: AutoWatchAlerts | None = None,
 ) -> tuple[list[str], int, bool]:
     """중단 결정을 고정하고 예외 저장에 성공한 이벤트만 활성 목록에서 제거합니다."""
 
@@ -1775,6 +1909,8 @@ def _process_due_auto_watch_events(
                 )
                 continue
 
+            if alerts is not None:
+                alerts.exception_saved(record)
             exception_event_count += 1
             typer.echo(
                 f"경기 ID {event.event_id}: time_status="
@@ -1903,12 +2039,20 @@ def _print_auto_watch_candidate_summary(
     typer.echo(f"  • 새로 추가한 경기: {added_event_count}개")
 
 
+@dataclass(frozen=True)
+class AutoWatchBatch:
+    result: CaptureResult | None
+    request_category: RequestCategory | None
+    stop_reason: str | None = None
+    transient_failure: str | None = None
+
+
 def _capture_auto_watch_batch(
     *,
     settings: Settings,
     requested_event_ids: list[str],
     requested_events: list[RequestedEvent],
-) -> tuple[CaptureResult | None, bool, RequestCategory | None]:
+) -> AutoWatchBatch:
     """호출 기록을 먼저 남기고 auto-watch Event View 배치 하나를 수집합니다."""
 
     request_category = classify_request_category(requested_events)
@@ -1928,19 +2072,25 @@ def _capture_auto_watch_batch(
             f"API 호출 기록을 시작하지 못해 유료 API를 호출하지 않습니다. {error}",
             err=True,
         )
-        return None, True, None
+        return AutoWatchBatch(
+            None, None, stop_reason=f"{EVENT_VIEW_ENDPOINT} 요청 기록 저장 실패"
+        )
     except httpx.RequestError:
         typer.echo(
             "API 서버에 연결하지 못했습니다. 다음 수집 주기에 다시 시도합니다.",
             err=True,
         )
-        return None, False, request_category
+        return AutoWatchBatch(None, request_category, transient_failure="연결 실패")
     except OSError as error:
         typer.echo(
             f"Capture 저장에 실패해 추가 유료 호출을 중단합니다. {error}",
             err=True,
         )
-        return None, True, request_category
+        return AutoWatchBatch(
+            None,
+            request_category,
+            stop_reason=f"{EVENT_VIEW_ENDPOINT} 수집 기록 저장 실패",
+        )
 
     _print_capture_summary(result)
     _print_observation_save_failures(result)
@@ -1951,7 +2101,11 @@ def _capture_auto_watch_batch(
             "인증·결제·권한·호출 제한 상태를 확인한 뒤 다시 실행하세요.",
             err=True,
         )
-        return result, True, request_category
+        return AutoWatchBatch(
+            result,
+            request_category,
+            stop_reason=f"{EVENT_VIEW_ENDPOINT} HTTP {result.response.status_code}",
+        )
 
     if result.response.is_error:
         typer.echo(
@@ -1959,11 +2113,17 @@ def _capture_auto_watch_batch(
             "즉시 연속 재시도하지 않고 다음 수집 주기에 다시 시도합니다.",
             err=True,
         )
-        return result, False, request_category
+        return AutoWatchBatch(
+            result,
+            request_category,
+            transient_failure=f"HTTP {result.response.status_code}"
+            if result.response.is_server_error
+            else None,
+        )
 
     for observation in result.event_observations:
         _compare_and_save_structure_change(observation)
-    return result, False, request_category
+    return AutoWatchBatch(result, request_category)
 
 
 def _print_auto_watch_summary(
@@ -2142,6 +2302,8 @@ def _update_auto_watch_states(
     state: AutoWatchState,
     result: CaptureResult,
     auto_watch_config: AutoWatchConfig,
+    alerts: AutoWatchAlerts | None = None,
+    cycle: int = 0,
 ) -> bool:
     """성공한 Capture의 상태값과 출처를 Auto-watch 상태에 반영합니다."""
 
@@ -2182,6 +2344,10 @@ def _update_auto_watch_states(
             )
             continue
 
+        if alerts is not None and result.response.is_success:
+            alerts.matches.observe(
+                event, event_data, observed_at=result.metadata.captured_at, cycle=cycle
+            )
         update = apply_auto_watch_time_status(
             event=event,
             time_status=event_data.get("time_status"),

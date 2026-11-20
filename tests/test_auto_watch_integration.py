@@ -6,13 +6,18 @@ from typing import cast
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
 from scorenow_api_observer.auto_watch.config import load_auto_watch_config
-from scorenow_api_observer.auto_watch.models import AutoWatchState
-from scorenow_api_observer.auto_watch.state import load_auto_watch_state
+from scorenow_api_observer.auto_watch.models import AutoWatchActiveEvent, AutoWatchState
+from scorenow_api_observer.auto_watch.state import (
+    load_auto_watch_state,
+    save_auto_watch_state,
+)
 from scorenow_api_observer.bets_api_request_log import BetsApiRequestRecord
+from scorenow_api_observer.discord_webhook import DiscordWebhook
 from scorenow_api_observer.event_view import collector as event_view_collector
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.upcoming import discovery as upcoming_discovery
@@ -181,3 +186,102 @@ def test_auto_discovery_files_feed_running_auto_watch_without_duplicates(
         "/v3/events/upcoming": 4,
         "/v1/event/view": 2,
     }
+
+
+def test_collection_alerts_and_scheduled_daily_report_share_local_records(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    configured_policies = Path("config/auto_watch.yaml").read_text(encoding="utf-8")
+    now = datetime(2026, 11, 19, 4, 15, tzinfo=UTC)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    monkeypatch.setattr(cli, "Settings", _FakeSettings)
+    monkeypatch.setattr(
+        cli,
+        "load_upcoming_targets",
+        lambda: [UpcomingTarget("1", "football", "94", "premier-league", True)],
+    )
+    Path("config").mkdir()
+    Path("config/auto_watch.yaml").write_text(
+        configured_policies.replace("soccer_per_hour: 3600", "soccer_per_hour: 1"),
+        encoding="utf-8",
+    )
+    save_auto_watch_state(
+        AutoWatchState(
+            updated_at=now,
+            active_events=[
+                AutoWatchActiveEvent(
+                    event_id="A",
+                    sport_code="football",
+                    league_id="94",
+                    league_label="premier-league",
+                    scheduled_at_utc=now,
+                    added_at=now,
+                )
+            ],
+        )
+    )
+
+    class CaptureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    monkeypatch.setattr(event_view_collector, "datetime", CaptureClock)
+    bets_calls = 0
+
+    def get_event_view(**kwargs):
+        nonlocal bets_calls
+        bets_calls += 1
+        assert kwargs["requested_event_ids"] == ["A"]
+        (request_path,) = Path("data/metrics/bets-api-requests").rglob("*.json")
+        record = BetsApiRequestRecord.model_validate_json(request_path.read_bytes())
+        assert record.outcome == "started"
+        assert "test-token" not in request_path.read_text(encoding="utf-8")
+        return _response(
+            endpoint="/v1/event/view",
+            body={
+                "success": 1,
+                "results": [{"id": "A", "time_status": "1", "timer": {"md": "3"}}],
+            },
+        )
+
+    messages = []
+
+    def transport(request):
+        messages.append(request)
+        return httpx.Response(200, json={"id": str(len(messages))})
+
+    webhook = DiscordWebhook(
+        SecretStr("https://discord.example/api/webhooks/123/private"),
+        httpx.MockTransport(transport),
+    )
+    monkeypatch.setattr(cli, "load_discord_webhook", lambda: webhook)
+    monkeypatch.setattr(event_view_collector, "get_event_view", get_event_view)
+    runner = CliRunner()
+
+    result = runner.invoke(cli.app, ["auto-watch", "--max-cycles", "1"])
+    assert result.exit_code == 0, result.output
+    assert len(messages) == 1
+    assert "연장 후반" in messages[0].content.decode()
+    (request_path,) = Path("data/metrics/bets-api-requests").rglob("*.json")
+    record = BetsApiRequestRecord.model_validate_json(request_path.read_bytes())
+    assert record.outcome == "completed"
+    assert record.requested_at == now
+
+    result = runner.invoke(cli.app, ["check-operations-alerts"])
+    assert result.exit_code == 0, result.output
+    assert len(messages) == 3
+    assert "축구 API 요청 한도 주의" in messages[1].content.decode()
+    assert "축구 API 요청 한도 위험" in messages[2].content.decode()
+
+    now = datetime(2026, 11, 20, 0, tzinfo=UTC)
+    result = runner.invoke(cli.app, ["publish-daily-report"])
+    assert result.exit_code == 0, result.output
+    assert len(messages) == 4
+    path = Path("reports/daily-operations/2026-11-19.md")
+    assert path.read_bytes() in messages[-1].content
+    assert "Event View 1회" in path.read_text(encoding="utf-8")
+    assert "test-token" not in path.read_text(encoding="utf-8")
+    assert bets_calls == 1

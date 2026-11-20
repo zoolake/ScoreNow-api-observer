@@ -9,6 +9,7 @@ User=scorenow
 Group=scorenow
 WorkingDirectory=/opt/scorenow-api-observer
 EnvironmentFile=/etc/scorenow-api-observer/bets-api.env
+EnvironmentFile=-/etc/scorenow-api-observer/discord.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/scorenow-api-observer/.venv/bin/observer auto-watch --interval 120

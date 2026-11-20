@@ -48,6 +48,10 @@ class AutoWatchHeartbeat(BaseModel):
         return self
 
 
+def heartbeat_stale_after_seconds(interval_seconds: int) -> int:
+    return max(interval_seconds * 2, interval_seconds + 60)
+
+
 def new_auto_watch_heartbeat(
     *,
     now: datetime,

@@ -1,0 +1,17 @@
+[Unit]
+Description=Check ScoreNow Collection Health and API Usage
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=scorenow
+Group=scorenow
+WorkingDirectory=/opt/scorenow-api-observer
+EnvironmentFile=-/etc/scorenow-api-observer/discord.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/scorenow-api-observer/.venv/bin/observer check-operations-alerts
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true

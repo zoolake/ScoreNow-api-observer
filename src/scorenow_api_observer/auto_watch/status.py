@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -20,6 +21,7 @@ from scorenow_api_observer.auto_watch.exceptions import (
 from scorenow_api_observer.auto_watch.heartbeat import (
     AUTO_WATCH_HEARTBEAT_PATH,
     AutoWatchHeartbeat,
+    heartbeat_stale_after_seconds,
     load_auto_watch_heartbeat,
 )
 from scorenow_api_observer.auto_watch.models import AutoWatchActiveEvent, AutoWatchState
@@ -52,6 +54,7 @@ API_ENDPOINTS: tuple[BetsApiEndpoint, ...] = (
     "/v2/event/odds",
 )
 ApiRequestRecord = BetsApiRequestRecord | EventViewApiRequestRecord
+Sport = Literal["football", "baseball"]
 
 
 @dataclass(frozen=True)
@@ -150,34 +153,13 @@ def build_auto_watch_status_report(
         missing_is_failure=False,
     )
 
-    day_start_utc, day_end_utc = _kst_day_utc_window(target_date_kst)
-    window_start_utc, window_end_utc = _current_hour_window(normalized_now)
-    request_paths = _find_request_paths(
-        base_directory=request_base_directory,
-        windows=(
-            (day_start_utc, day_end_utc),
-            (window_start_utc, window_end_utc),
-        ),
-    )
-    request_records: list[ApiRequestRecord] = []
-    request_records.extend(
-        _load_bets_api_request_records(
-            request_paths,
-            failures=failures,
-        )
-    )
-    legacy_request_paths = _find_request_paths(
-        base_directory=legacy_event_view_request_base_directory,
-        windows=(
-            (day_start_utc, day_end_utc),
-            (window_start_utc, window_end_utc),
-        ),
-    )
-    request_records.extend(
-        _load_legacy_event_view_request_records(
-            legacy_request_paths,
-            failures=failures,
-        )
+    day_start_utc, day_end_utc = kst_day_utc_window(target_date_kst)
+    window_start_utc, window_end_utc = current_hour_window(normalized_now)
+    request_records = load_request_records(
+        windows=((day_start_utc, day_end_utc), (window_start_utc, window_end_utc)),
+        request_base_directory=request_base_directory,
+        legacy_base_directory=legacy_event_view_request_base_directory,
+        failures=failures,
     )
     daily_records = [
         record
@@ -192,22 +174,17 @@ def build_auto_watch_status_report(
             and record.requested_at <= normalized_now
         )
     ]
-    valid_rate_limit_records = _latest_valid_rate_limit_records(
+    valid_rate_limit_records = latest_valid_rate_limit_records(
         current_window_records,
         window_end=window_end_utc,
     )
 
-    exception_paths = _find_exception_paths(
-        base_directory=exception_base_directory,
+    exceptions = load_exceptions_for_window(
         start=day_start_utc,
         end=day_end_utc,
+        base_directory=exception_base_directory,
+        failures=failures,
     )
-    exceptions = [
-        stored_exception
-        for stored_exception in _load_exceptions(exception_paths, failures=failures)
-        if day_start_utc <= stored_exception.record.stopped_at < day_end_utc
-    ]
-    exceptions.sort(key=lambda item: item.record.stopped_at, reverse=True)
 
     return AutoWatchStatusReport(
         checked_at=normalized_now,
@@ -261,21 +238,15 @@ def _render_heartbeat(lines: list[str], report: AutoWatchStatusReport) -> None:
         return
 
     if heartbeat.status == "running":
-        age_seconds = max(
-            0,
-            int((report.checked_at - heartbeat.last_cycle_at).total_seconds()),
-        )
-        stale_after_seconds = max(
-            heartbeat.interval_seconds * 2,
-            heartbeat.interval_seconds + 60,
-        )
+        age_seconds = (report.checked_at - heartbeat.last_cycle_at).total_seconds()
+        stale_after_seconds = heartbeat_stale_after_seconds(heartbeat.interval_seconds)
         if age_seconds <= stale_after_seconds:
             lines.append("  • 상태: 정상 실행 중")
         else:
             lines.append("  ⚠️ 상태: 최근 처리 주기가 늦어 확인이 필요합니다.")
         lines.append(
             f"  • 마지막 처리 주기: {_format_datetime(heartbeat.last_cycle_at, KST)} "
-            f"({_format_duration(age_seconds)} 전)"
+            f"({_format_duration(max(0, int(age_seconds)))} 전)"
         )
     elif heartbeat.status == "failed":
         lines.append("  ❌ 상태: 오류로 중단됨")
@@ -396,16 +367,7 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
     current_counts = report.requests.current_window_category_counts()
     current_endpoint_counts = report.requests.current_window_endpoint_counts()
     current_total = len(report.requests.current_window_records)
-    soccer_count = (
-        current_counts["football_only"]
-        + current_counts["mixed"]
-        + current_counts["unknown"]
-    )
-    baseball_count = (
-        current_counts["baseball_only"]
-        + current_counts["mixed"]
-        + current_counts["unknown"]
-    )
+    sport_counts = sport_request_counts(report.requests.current_window_records)
     lines.extend(
         [
             "",
@@ -442,14 +404,14 @@ def _render_request_status(lines: list[str], report: AutoWatchStatusReport) -> N
                 "[현재 구간 요청 한도 — 로컬 기록 기준]",
                 _format_limit_line(
                     label="Soccer API",
-                    count=soccer_count,
+                    count=sport_counts["football"],
                     limit=limits.soccer_per_hour,
                     warning_percent=limits.warning_percent,
                     danger_percent=limits.danger_percent,
                 ),
                 _format_limit_line(
                     label="Baseball API",
-                    count=baseball_count,
+                    count=sport_counts["baseball"],
                     limit=limits.baseball_per_hour,
                     warning_percent=limits.warning_percent,
                     danger_percent=limits.danger_percent,
@@ -540,7 +502,7 @@ def _render_rate_limit_records(
                 ),
                 (
                     "    응답 확인 시각: "
-                    f"{_format_datetime(_request_completion_time(record), KST)} KST"
+                    f"{_format_datetime(request_completion_time(record), KST)} KST"
                 ),
             ]
         )
@@ -642,22 +604,88 @@ def _load_optional_component[T](
         return None
 
 
+def sport_request_counts(records: list[ApiRequestRecord]) -> dict[Sport, int]:
+    counts = Counter(record.request_category for record in records)
+    shared = counts["mixed"] + counts["unknown"]
+    return {
+        "football": counts["football_only"] + shared,
+        "baseball": counts["baseball_only"] + shared,
+    }
+
+
+def load_request_records(
+    *,
+    windows: tuple[tuple[datetime, datetime], ...],
+    failures: list[StatusReadFailure],
+    request_base_directory: Path = BETS_API_REQUEST_LOG_DIRECTORY,
+    legacy_base_directory: Path = EVENT_VIEW_REQUEST_LOG_DIRECTORY,
+) -> list[ApiRequestRecord]:
+    common_paths = _find_request_paths(
+        base_directory=request_base_directory, windows=windows, failures=failures
+    )
+    legacy_paths = _find_request_paths(
+        base_directory=legacy_base_directory, windows=windows, failures=failures
+    )
+    return [
+        *_load_bets_api_request_records(common_paths, failures=failures),
+        *_load_legacy_event_view_request_records(legacy_paths, failures=failures),
+    ]
+
+
+def load_exceptions_for_window(
+    *,
+    start: datetime,
+    end: datetime,
+    failures: list[StatusReadFailure],
+    base_directory: Path = AUTO_WATCH_EXCEPTION_DIRECTORY,
+) -> list[StoredAutoWatchException]:
+    paths = _find_exception_paths(
+        base_directory=base_directory, start=start, end=end, failures=failures
+    )
+    return sorted(
+        (
+            item
+            for item in _load_exceptions(paths, failures=failures)
+            if start <= item.record.stopped_at < end
+        ),
+        key=lambda item: item.record.stopped_at,
+        reverse=True,
+    )
+
+
+def _list_record_paths(
+    directory: Path,
+    failures: list[StatusReadFailure],
+    *,
+    pattern: str = "*.json",
+) -> list[Path]:
+    try:
+        return sorted(path for path in directory.iterdir() if path.match(pattern))
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        failures.append(StatusReadFailure("기록 디렉터리", directory, str(error)))
+        return []
+
+
 def _find_request_paths(
     *,
     base_directory: Path,
     windows: tuple[tuple[datetime, datetime], ...],
+    failures: list[StatusReadFailure],
 ) -> list[Path]:
     target_dates = {
         target_date
         for start, end in windows
         for target_date in _utc_dates_for_window(start, end)
     }
-    return sorted(
+    return [
         path
-        for target_date in target_dates
-        for path in (base_directory / target_date.isoformat()).glob("*.json")
-        if path.is_file()
-    )
+        for target_date in sorted(target_dates)
+        for path in _list_record_paths(
+            base_directory / target_date.isoformat(), failures
+        )
+    ]
 
 
 def _load_bets_api_request_records(
@@ -713,15 +741,16 @@ def _find_exception_paths(
     base_directory: Path,
     start: datetime,
     end: datetime,
+    failures: list[StatusReadFailure],
 ) -> list[Path]:
-    return sorted(
+    return [
         path
-        for target_date in _utc_dates_for_window(start, end)
-        for path in base_directory.glob(
-            f"time-status-*/{target_date.isoformat()}/*.json"
+        for directory in _list_record_paths(
+            base_directory, failures, pattern="time-status-*"
         )
-        if path.is_file()
-    )
+        for target_date in _utc_dates_for_window(start, end)
+        for path in _list_record_paths(directory / target_date.isoformat(), failures)
+    ]
 
 
 def _load_exceptions(
@@ -748,19 +777,19 @@ def _load_exceptions(
     return records
 
 
-def _kst_day_utc_window(target_date: date) -> tuple[datetime, datetime]:
+def kst_day_utc_window(target_date: date) -> tuple[datetime, datetime]:
     start_kst = datetime.combine(target_date, time.min, tzinfo=KST)
     end_kst = start_kst + timedelta(days=1)
     return start_kst.astimezone(UTC), end_kst.astimezone(UTC)
 
 
-def _current_hour_window(now: datetime) -> tuple[datetime, datetime]:
+def current_hour_window(now: datetime) -> tuple[datetime, datetime]:
     normalized_now = _as_utc(now)
     window_start = normalized_now.replace(minute=0, second=0, microsecond=0)
     return window_start, window_start + timedelta(hours=1)
 
 
-def _latest_valid_rate_limit_records(
+def latest_valid_rate_limit_records(
     records: list[ApiRequestRecord],
     *,
     window_end: datetime,
@@ -771,14 +800,14 @@ def _latest_valid_rate_limit_records(
         if rate_limit is None or rate_limit.reset_at != window_end:
             continue
         previous = latest_by_category.get(record.request_category)
-        if previous is None or _request_completion_time(
+        if previous is None or request_completion_time(
             record
-        ) > _request_completion_time(previous):
+        ) > request_completion_time(previous):
             latest_by_category[record.request_category] = record
     return latest_by_category
 
 
-def _request_completion_time(record: ApiRequestRecord) -> datetime:
+def request_completion_time(record: ApiRequestRecord) -> datetime:
     return record.completed_at or record.requested_at
 
 

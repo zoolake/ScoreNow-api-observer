@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish the ScoreNow Daily Operations Report at 09:00 KST
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 UTC
+Persistent=false
+RandomizedDelaySec=0
+AccuracySec=1us
+Unit=scorenow-daily-report.service
+
+[Install]
+WantedBy=timers.target

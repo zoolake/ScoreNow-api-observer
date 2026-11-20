@@ -5,10 +5,12 @@ from typing import cast
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from scorenow_api_observer import cli
 from scorenow_api_observer.auto_watch import state as state_storage
+from scorenow_api_observer.auto_watch.alerts import AutoWatchAlerts
 from scorenow_api_observer.auto_watch.config import load_auto_watch_config
 from scorenow_api_observer.auto_watch.lock import (
     AutoWatchAlreadyRunningError,
@@ -18,6 +20,8 @@ from scorenow_api_observer.auto_watch.models import (
     AutoWatchActiveEvent,
     AutoWatchState,
 )
+from scorenow_api_observer.discord_alert_state import DiscordAlertState
+from scorenow_api_observer.discord_webhook import DiscordWebhook
 from scorenow_api_observer.settings import Settings
 from scorenow_api_observer.upcoming.targets import UpcomingTarget
 
@@ -279,6 +283,15 @@ def test_auto_watch_stops_without_retrying_rate_limit_response(
         lambda _seconds: (_ for _ in ()).throw(AssertionError("재시도하면 안 됩니다.")),
     )
 
+    sent = []
+
+    def send(title, description, **kwargs):
+        sent.append((title, description))
+        return "123"
+
+    alerts = AutoWatchAlerts(
+        DiscordAlertState(send, tmp_path / "alerts"), started_at=now
+    )
     completed = cli._run_auto_watch(
         settings=cast(Settings, _FakeSettings()),
         state=state,
@@ -287,10 +300,14 @@ def test_auto_watch_stops_without_retrying_rate_limit_response(
         candidate_check_interval_seconds=300,
         max_cycles=None,
         auto_watch_config=load_auto_watch_config(),
+        alerts=alerts,
     )
 
     assert not completed
     assert capture_count == 1
+    assert len(sent) == 1
+    assert "수집 중단" in sent[0][0]
+    assert "/v1/event/view HTTP 429" in sent[0][1]
 
 
 def test_due_non_finished_event_saves_exception_before_removal(
@@ -305,6 +322,7 @@ def test_due_non_finished_event_saves_exception_before_removal(
     event.last_capture_metadata_path = "metadata.json"
     state = AutoWatchState(updated_at=now, active_events=[event])
     saved_records = []
+    sent = []
 
     _patch_storage(monkeypatch, tmp_path)
 
@@ -314,10 +332,19 @@ def test_due_non_finished_event_saves_exception_before_removal(
 
     monkeypatch.setattr(cli, "save_auto_watch_exception_record", save_exception)
 
+    def send(title, description, **kwargs):
+        assert len(saved_records) == 1
+        sent.append((title, description))
+        return "123"
+
+    alerts = AutoWatchAlerts(
+        DiscordAlertState(send, tmp_path / "alerts"), started_at=now
+    )
     stopped_ids, exception_count, succeeded = cli._process_due_auto_watch_events(
         state=state,
         now=now,
         auto_watch_config=load_auto_watch_config(),
+        alerts=alerts,
     )
 
     assert succeeded
@@ -327,6 +354,8 @@ def test_due_non_finished_event_saves_exception_before_removal(
     assert saved_records[0].stop_time_status == 10
     assert saved_records[0].scheduled_at_kst.utcoffset() == timedelta(hours=9)
     assert state.active_events == []
+    assert len(sent) == 1
+    assert "time_status=10" in sent[0][1]
 
 
 def test_exception_save_failure_keeps_event_with_fixed_stop_time(
@@ -347,10 +376,17 @@ def test_exception_save_failure_keeps_event_with_fixed_stop_time(
         lambda _record: (_ for _ in ()).throw(OSError("disk unavailable")),
     )
 
+    def send(title, description, **kwargs):
+        raise AssertionError("예외 저장 실패는 경기 예외 종료 알림을 보내면 안 됩니다.")
+
+    alerts = AutoWatchAlerts(
+        DiscordAlertState(send, tmp_path / "alerts"), started_at=now
+    )
     stopped_ids, exception_count, succeeded = cli._process_due_auto_watch_events(
         state=state,
         now=now,
         auto_watch_config=load_auto_watch_config(),
+        alerts=alerts,
     )
 
     assert succeeded
@@ -362,3 +398,67 @@ def test_exception_save_failure_keeps_event_with_fixed_stop_time(
     loaded = state_storage.load_auto_watch_state(tmp_path / "state.json")
     assert loaded is not None
     assert loaded.active_events[0].stop_decided_at == now
+
+
+def test_auto_watch_alert_counts_failed_cycles_and_recovers_after_webhook_error(
+    monkeypatch,
+    tmp_path,
+):
+    now = datetime(2026, 11, 19, 4, tzinfo=UTC)
+    state = AutoWatchState(
+        updated_at=now,
+        active_events=[
+            _active_event(event_id=str(i), sport_code="football", now=now)
+            for i in range(11)
+        ],
+    )
+    _patch_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_refresh_auto_watch_candidates", lambda **kwargs: [])
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    captures = 0
+    messages = []
+
+    def capture_event_view(**kwargs):
+        nonlocal captures
+        captures += 1
+        if captures <= 8:
+            if captures % 2 == 1:
+                raise httpx.ConnectError("연결 실패")
+            return _capture_result(503, now)
+        result = _capture_result(200, now)
+        result.metadata.http_status_code = 200
+        result.metadata.returned_event_ids = kwargs["requested_event_ids"]
+        result.metadata.response_issues = []
+        return result
+
+    def transport(request):
+        messages.append((captures, request.content.decode()))
+        if len(messages) == 1:
+            raise httpx.ReadTimeout("timeout", request=request)
+        return httpx.Response(200, json={"id": "123"})
+
+    webhook = DiscordWebhook(
+        SecretStr("https://discord.example/api/webhooks/123/private"),
+        httpx.MockTransport(transport),
+    )
+    alerts = AutoWatchAlerts(
+        DiscordAlertState(webhook.send, tmp_path / "alerts"),
+        started_at=now,
+    )
+    monkeypatch.setattr(cli, "capture_event_view", capture_event_view)
+    assert cli._run_auto_watch(
+        settings=cast(Settings, _FakeSettings()),
+        state=state,
+        within_minutes=10,
+        interval_seconds=1,
+        candidate_check_interval_seconds=300,
+        max_cycles=6,
+        auto_watch_config=load_auto_watch_config(),
+        alerts=alerts,
+    )
+    assert captures == 12
+    assert [capture for capture, _ in messages] == [6, 8, 10]
+    assert "3주기" in messages[0][1]
+    assert "4주기" in messages[1][1]
+    assert "수집 복구" in messages[2][1]

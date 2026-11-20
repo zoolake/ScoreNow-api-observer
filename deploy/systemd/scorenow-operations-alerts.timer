@@ -1,0 +1,10 @@
+[Unit]
+Description=Check ScoreNow Operations Alerts Every Minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00 UTC
+AccuracySec=1s
+Unit=scorenow-operations-alerts.service
+
+[Install]
+WantedBy=timers.target
